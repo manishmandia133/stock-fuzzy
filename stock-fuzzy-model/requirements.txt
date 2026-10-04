@@ -1,0 +1,7 @@
+yfinance
+scikit-fuzzy
+torch
+numpy
+pandas
+matplotlib
+scikit-learn
