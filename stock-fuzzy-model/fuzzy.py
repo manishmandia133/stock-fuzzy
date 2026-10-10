@@ -142,3 +142,52 @@ def check_gate() -> dict:
             "ruspini_maxdiff": ruspini_maxdiff, "ruspini_ok": ruspini_ok,
             "skfuzzy_maxdiff": sk_maxdiff, "skfuzzy_ok": sk_ok,
             "pass": bool(ok)}
+
+
+# ---------------------------------------------------------------------------
+# ORIGINAL zero-order Sugeno controller (prior prototype, kept as reference).
+# Membership-weighted average of 3 constants — NOT used for training anymore.
+# MFs: trapmf[0,0,.25,.55], trimf[.2,.5,.8], trapmf[.45,.75,1,1];
+# anchors: low vol -> 1.5e-3, med -> 1.0e-3, high -> 0.4e-3.
+# ---------------------------------------------------------------------------
+
+def _trapmf(x, a, b, c, d):
+    """Trapezoidal membership (plateau on [b, c]; shoulders if a==b / c==d)."""
+    x = np.asarray(x, dtype=float)
+    y = np.zeros_like(x)
+    if b != a:
+        m = (x > a) & (x < b)
+        y[m] = (x[m] - a) / (b - a)
+    plat = (x >= b) & (x <= c)
+    y[plat] = 1.0
+    if d != c:
+        m = (x > c) & (x < d)
+        y[m] = (d - x[m]) / (d - c)
+    return np.clip(y, 0, 1)
+
+
+SUGENO_LOW = _trapmf(V_GRID, 0, 0, 0.25, 0.55)
+SUGENO_MED = _trimf(V_GRID, 0.20, 0.50, 0.80)
+SUGENO_HIGH = _trapmf(V_GRID, 0.45, 0.75, 1.0, 1.0)
+SUGENO_CURVE = ((SUGENO_LOW * cfg.LR_LOW + SUGENO_MED * cfg.LR_MED
+                 + SUGENO_HIGH * cfg.LR_HIGH)
+                / (SUGENO_LOW + SUGENO_MED + SUGENO_HIGH + 1e-9))
+SUGENO_MEAN = float(SUGENO_CURVE.mean())
+
+
+def sugeno_lr(v) -> float:
+    """Reference: original Sugeno weighted-average mapping (not for training)."""
+    return float(np.interp(np.clip(v, 0, 1), V_GRID, SUGENO_CURVE))
+
+
+def sugeno_gate() -> dict:
+    """Gate numbers of the ORIGINAL Sugeno curve (report traceability)."""
+    diffs = np.abs(np.diff(SUGENO_CURVE))
+    max_step = float(diffs.max())
+    lr_range = float(SUGENO_CURVE.max() - SUGENO_CURVE.min())
+    mean_ok = abs(SUGENO_MEAN - 1e-3) / 1e-3 < 0.20
+    smooth_ok = max_step < 0.05 * lr_range
+    mono_ok = bool(np.all(np.diff(SUGENO_CURVE) <= 1e-12))
+    return {"max_step": max_step, "range": lr_range, "mean": SUGENO_MEAN,
+            "smooth_ok": smooth_ok, "mean_ok": mean_ok, "mono_ok": mono_ok,
+            "pass": bool(smooth_ok and mean_ok and mono_ok)}

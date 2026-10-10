@@ -13,8 +13,15 @@ from evaluate import evaluate_run
 from plots import make_all_plots
 from train import VARIANTS, train_variant
 
-COMPARE_VARIANTS = ["fixed_1e-3", "fixed_mean_fuzzy", "fuzzy_shuffled_vol"]
+COMPARE_VARIANTS = ["fixed_1e-3", "fixed_mean_fuzzy", "cosine", "crisp",
+                    "fuzzy_inverted", "fuzzy_shuffled_vol"]
 COMPARE_METRICS = ["test_auc", "best_val_loss", "highvol_loss_var"]
+
+# Report expectations (Sec 6.1): compared against actuals at runtime.
+# Any mismatch is printed plainly — never hidden.
+EXPECTED = {"n_train": 1863, "n_val": 352, "n_test": 353,
+            "up_train": 0.541, "up_val": 0.534, "up_test": 0.578,
+            "checksum": 202000.3771}
 
 
 def _paired(a, b, name):
@@ -37,16 +44,22 @@ def main(seeds=None, variants=None, make_plots=True):
     seeds = seeds or cfg.SEEDS
     variants = variants or VARIANTS
 
-    print("=== fuzzy gate (Mamdani FIS) ===")
+    print("=== fuzzy gate (T4, Mamdani FIS) ===")
     g = fz.check_gate()
     for k, v in g.items():
         print(f"  {k}: {v}")
     print("  NOTE: curve/corr gates are tautological — they verify the "
           "controller shape, not training benefit.")
     if not g["pass"]:
-        print("GATE FAILED — fix fuzzy.py before training.")
+        print("T4 GATE FAILED — fix fuzzy.py before training.")
         sys.exit(1)
-    print("  fuzzy gate: PASS")
+    print("  T4: PASS")
+    print("=== prior Sugeno prototype (reference only, not trained) ===")
+    sg = fz.sugeno_gate()
+    for k, v in sg.items():
+        print(f"  sugeno_{k}: {v}")
+    print("  (report traceability: prior prototype mean ~9.63e-4, "
+          "max step ~1.79e-5)")
 
     print("=== data ===")
     raw = D.batch_download(cfg.UNIVERSE, cfg.START_DATE, cfg.END_DATE)
@@ -54,6 +67,10 @@ def main(seeds=None, variants=None, make_plots=True):
     engineered = {t: df for t, df in engineered.items() if len(df) > cfg.WINDOW + 20}
     data, kept = D.build_dataset(engineered)
     print(f"kept tickers: {kept}")
+    # T2/T3: the asserts inside data.py (chronological order, label
+    # spot-check, n_train>1500, no NaN) raise on failure — reaching here = PASS.
+    print(f"T2: PASS (chronological split asserts + 3-window label spot-check)")
+    print(f"T3: PASS (n_train={len(data['X_train'])} > 1500, no NaN)")
 
     print("=== split stats ===")
     for name in ["train", "val", "test"]:
@@ -61,12 +78,28 @@ def main(seeds=None, variants=None, make_plots=True):
         print(f"  {name}: n={len(y)} up_rate={y.mean():.4f} "
               f"majority={max(y.mean(), 1 - y.mean()):.4f}")
 
-    print("=== reproducibility check (data build twice) ===")
+    print("=== reproducibility check (T1: data build twice) ===")
     h1 = float(data["X_train"].sum())
     data2, _ = D.build_dataset(engineered)
     h2 = float(data2["X_train"].sum())
-    assert h1 == h2, "non-deterministic data pipeline"
-    print(f"  deterministic OK (sum={h1:.4f})")
+    t1_pass = (h1 == h2)
+    print(f"  T1: {'PASS' if t1_pass else 'FAIL'} "
+          f"(checksum={h1:.4f}, expected={EXPECTED['checksum']:.4f})")
+    assert t1_pass, "non-deterministic data pipeline"
+
+    print("=== report expected-vs-actual (Sec 6.1) ===")
+    actual = {"n_train": len(data["X_train"]), "n_val": len(data["X_val"]),
+              "n_test": len(data["X_test"]),
+              "up_train": float(data["y_train"].mean()),
+              "up_val": float(data["y_val"].mean()),
+              "up_test": float(data["y_test"].mean()),
+              "checksum": h1}
+    for k in ["n_train", "n_val", "n_test", "up_train", "up_val",
+              "up_test", "checksum"]:
+        e, a = EXPECTED[k], actual[k]
+        match = (a == e) if isinstance(e, int) else abs(a - e) < 0.0005
+        flag = "MATCHES REPORT" if match else f"DIFFERS FROM REPORT (actual {a} vs report {e})"
+        print(f"  {k}: actual={a} expected={e} -> {flag}")
 
     rows = []
     for seed in seeds:
@@ -76,11 +109,11 @@ def main(seeds=None, variants=None, make_plots=True):
                 data["X_val"], data["y_val"], variant, seed)
 
             if info["batch_vol_std"] <= 0.15:
-                print(f"GATE FAILED for {variant} s{seed}: "
+                print(f"T5 GATE FAILED for {variant} s{seed}: "
                       f"batch vol std={info['batch_vol_std']:.3f} <= 0.15")
                 sys.exit(1)
             if variant == "fuzzy" and not (info["vol_lr_corr"] < -0.7):
-                print(f"GATE FAILED: corr(vol,lr)={info['vol_lr_corr']:.3f} >= -0.7.")
+                print(f"T6 GATE FAILED: corr(vol,lr)={info['vol_lr_corr']:.3f} >= -0.7.")
                 sys.exit(1)
 
             m = evaluate_run(model, history, log_df,
@@ -119,7 +152,9 @@ def main(seeds=None, variants=None, make_plots=True):
     print(f"=== constant-predictor summary: {n_const}/{len(res)} runs "
           f"predict a single class at 0.5 threshold ===")
 
-    print("=== paired tests: fuzzy vs controls (p-values UNCORRECTED) ===")
+    print("=== paired tests T8: fuzzy vs all others ===")
+    print("  (paired t + Wilcoxon per seed; p-values UNCORRECTED; "
+          "n=5 seeds; Wilcoxon min achievable p=0.0625)")
     fz_res = res[res["variant"] == "fuzzy"].set_index("seed").sort_index()
     for other in COMPARE_VARIANTS:
         ot = res[res["variant"] == other].set_index("seed").sort_index()
@@ -128,8 +163,26 @@ def main(seeds=None, variants=None, make_plots=True):
             _paired(fz_res[metric].values, ot[metric].values,
                     f"  {metric}")
 
+    print("=== mean_lr_used per variant (RQ1 equal-mean fairness) ===")
+    with pd.option_context("display.width", 200, "display.max_columns", 10):
+        print(res.groupby("variant")[["mean_lr_used"]].agg(["mean", "std", "min", "max"]).to_string())
+
+    n_leak = int(res["leakage_flag"].sum())
+    print(f"T7: {'FLAG — ' + str(n_leak) + ' run(s) with AUC>0.60 (suspect leakage, flagged not dropped)' if n_leak else 'PASS (no test AUC > 0.60)'}")
+    print("T8: DONE (paired stats above; do not claim fuzzy wins unless tests support it)")
+
+    print("=== GATE SUMMARY T1..T8 ===")
+    print(f"  T1 data reproducibility : {'PASS' if t1_pass else 'FAIL'}")
+    print("  T2 split/label checks    : PASS (asserts in data.py)")
+    print(f"  T3 scope windows/NaN     : PASS (n_train={len(data['X_train'])})")
+    print(f"  T4 fuzzy curve           : {'PASS' if g['pass'] else 'FAIL'} (tautological: shape only)")
+    print("  T5 regime batching       : PASS (all batch_vol_std > 0.15)")
+    print("  T6 fuzzy corr(vol,lr)    : PASS (tautological: schedule check)")
+    print(f"  T7 leakage flag          : {'FLAG' if n_leak else 'PASS'}")
+    print("  T8 paired stats          : DONE")
+
     if make_plots:
-        make_all_plots()
+        make_all_plots(data=data)
     print("Done. results.csv written.")
     return res
 

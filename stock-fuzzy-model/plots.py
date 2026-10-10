@@ -21,47 +21,30 @@ def _save(fig, name):
     plt.close(fig)
 
 
-def plot_01_membership_input():
-    fig, ax = plt.subplots(figsize=(7, 4))
+def plot_01_membership_functions():
+    """Input (Ruspini vol_rank) + output (LR) membership functions."""
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
     v = fz.V_GRID
-    ax.plot(v, fz.mu_low(v), label="Low")
-    ax.plot(v, fz.mu_med(v), label="Medium")
-    ax.plot(v, fz.mu_high(v), label="High")
-    ax.set_title("Input MFs: vol_rank (Ruspini triangular partition)")
-    ax.set_xlabel("vol_rank")
-    ax.set_ylabel("membership")
-    ax.legend()
-    fig.tight_layout()
-    _save(fig, "01_membership_input.png")
-
-
-def plot_02_membership_output():
-    fig, ax = plt.subplots(figsize=(7, 4))
+    ax[0].plot(v, fz.mu_low(v), label="Low")
+    ax[0].plot(v, fz.mu_med(v), label="Medium")
+    ax[0].plot(v, fz.mu_high(v), label="High")
+    ax[0].set_title("Input MFs: vol_rank (Ruspini, sum=1)")
+    ax[0].set_xlabel("vol_rank")
+    ax[0].set_ylabel("membership")
+    ax[0].legend()
     u = fz.OUT_GRID * 1e3
-    ax.plot(u, fz.SLOW_MF, label="Slow (c=0.4e-3)")
-    ax.plot(u, fz.MED_MF, label="Medium (c=1.0e-3)")
-    ax.plot(u, fz.FAST_MF, label="Fast (c=1.6e-3)")
-    ax.set_title("Output MFs: learning rate")
-    ax.set_xlabel("LR (1e-3)")
-    ax.set_ylabel("membership")
-    ax.legend()
+    ax[1].plot(u, fz.SLOW_MF, label="Slow (c=0.4e-3)")
+    ax[1].plot(u, fz.MED_MF, label="Medium (c=1.0e-3)")
+    ax[1].plot(u, fz.FAST_MF, label="Fast (c=1.6e-3)")
+    ax[1].set_title("Output MFs: learning rate")
+    ax[1].set_xlabel("LR (1e-3)")
+    ax[1].legend()
     fig.tight_layout()
-    _save(fig, "02_membership_output.png")
+    _save(fig, "01_membership_functions.png")
 
 
-def plot_03_control_curve():
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(fz.V_GRID, np.array(fz.LR_CURVE) * 1e3)
-    ax.set_title("Mamdani control curve (high vol -> lower LR)")
-    ax.set_xlabel("vol_rank")
-    ax.set_ylabel("LR (1e-3)")
-    fig.tight_layout()
-    _save(fig, "03_control_curve.png")
-
-
-def plot_04_worked_example(v0=0.7):
-    """Worked Mamdani inference at one vol_rank: firing levels, clipped
-    consequents, aggregated output + centroid."""
+def plot_02_control_and_example(v0=0.62):
+    """Control curve + worked Mamdani inference at vol_rank=0.62."""
     a_low, a_med, a_high = (float(fz.mu_low(v0)), float(fz.mu_med(v0)),
                             float(fz.mu_high(v0)))
     imp_fast = np.minimum(a_low, fz.FAST_MF)
@@ -69,28 +52,31 @@ def plot_04_worked_example(v0=0.7):
     imp_slow = np.minimum(a_high, fz.SLOW_MF)
     agg = np.maximum(np.maximum(imp_fast, imp_med), imp_slow)
     lr_star = float((agg * fz.OUT_GRID).sum() / max(agg.sum(), 1e-18))
-    fig, ax = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+    ax[0].plot(fz.V_GRID, np.array(fz.LR_CURVE) * 1e3)
+    ax[0].axvline(v0, color="k", linestyle="--", label=f"worked v={v0}")
+    ax[0].set_title("Mamdani control curve (high vol -> lower LR)")
+    ax[0].set_xlabel("vol_rank")
+    ax[0].set_ylabel("LR (1e-3)")
+    ax[0].legend()
     u = fz.OUT_GRID * 1e3
-    ax[0].plot(u, fz.SLOW_MF, "--", lw=1, label="Slow")
-    ax[0].plot(u, fz.MED_MF, "--", lw=1, label="Medium")
-    ax[0].plot(u, fz.FAST_MF, "--", lw=1, label="Fast")
-    ax[0].plot(u, imp_slow, label=f"Slow clipped (a={a_high:.2f})")
-    ax[0].plot(u, imp_med, label=f"Med clipped (a={a_med:.2f})")
-    ax[0].plot(u, imp_fast, label=f"Fast clipped (a={a_low:.2f})")
-    ax[0].set_ylabel("membership")
-    ax[0].legend(fontsize=8)
-    ax[0].set_title(f"Worked inference at vol_rank={v0}")
-    ax[1].fill_between(u, agg, alpha=0.4, label="aggregated (max)")
+    ax[1].plot(u, fz.SLOW_MF, "--", lw=1, label="Slow")
+    ax[1].plot(u, fz.MED_MF, "--", lw=1, label="Medium")
+    ax[1].plot(u, fz.FAST_MF, "--", lw=1, label="Fast")
+    ax[1].plot(u, imp_slow, label=f"Slow clipped (a={a_high:.2f})")
+    ax[1].plot(u, imp_med, label=f"Med clipped (a={a_med:.2f})")
+    ax[1].plot(u, imp_fast, label=f"Fast clipped (a={a_low:.2f})")
+    ax[1].fill_between(u, agg, alpha=0.15, label="aggregated (max)")
     ax[1].axvline(lr_star * 1e3, color="k", linestyle="--",
                   label=f"centroid LR={lr_star*1e3:.3f}e-3")
+    ax[1].set_title(f"Worked inference at vol_rank={v0}")
     ax[1].set_xlabel("LR (1e-3)")
-    ax[1].set_ylabel("membership")
     ax[1].legend(fontsize=8)
     fig.tight_layout()
-    _save(fig, "04_worked_example.png")
+    _save(fig, "02_control_and_worked_example.png")
 
 
-def plot_05_price_vol_lr(data_csv="data/processed_GSPC.csv"):
+def plot_03_price_vol_lr(data_csv="data/processed_GSPC.csv"):
     if not os.path.exists(data_csv):
         return
     df = pd.read_csv(data_csv, parse_dates=["Date"])
@@ -110,7 +96,7 @@ def plot_05_price_vol_lr(data_csv="data/processed_GSPC.csv"):
                           color=c, alpha=0.07)
     ax[2].set_xlabel("Date")
     fig.tight_layout()
-    _save(fig, "05_price_vol_lr.png")
+    _save(fig, "03_price_vol_lr.png")
 
 
 def plot_06_loss_curves(logdir="logs"):
@@ -165,7 +151,7 @@ def plot_07_auc_boxplot(results_csv="results.csv"):
     _save(fig, "07_auc_boxplot.png")
 
 
-def plot_lr_vs_vol(logdir="logs", seed=0):
+def plot_04_lr_vs_vol(logdir="logs", seed=0):
     p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
     if not os.path.exists(p):
         return
@@ -176,10 +162,10 @@ def plot_lr_vs_vol(logdir="logs", seed=0):
     ax.set_ylabel("LR (1e-3)")
     ax.set_title(f"Fuzzy LR vs volatility (seed {seed})")
     fig.tight_layout()
-    _save(fig, f"08_lr_vs_vol_s{seed}.png")
+    _save(fig, f"04_lr_vs_vol_s{seed}.png")
 
 
-def plot_lr_over_time(logdir="logs", seed=0):
+def plot_05_lr_over_steps(logdir="logs", seed=0):
     """LR schedule over optimizer steps (shuffled batch order, NOT time)."""
     p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
     if not os.path.exists(p):
@@ -194,17 +180,78 @@ def plot_lr_over_time(logdir="logs", seed=0):
     ax2.set_ylabel("batch vol")
     ax1.set_title(f"LR schedule over optimizer steps (seed {seed})")
     fig.tight_layout()
-    _save(fig, f"09_lr_over_step_s{seed}.png")
+    _save(fig, f"05_lr_over_step_s{seed}.png")
 
 
-def make_all_plots():
-    plot_01_membership_input()
-    plot_02_membership_output()
-    plot_03_control_curve()
-    plot_04_worked_example()
-    plot_05_price_vol_lr()
+def plot_08_split_balance(data=None, data_csv="data/processed_GSPC.csv"):
+    """Report Fig 8: per-split window counts + up-day class balance."""
+    if data is None:
+        if not os.path.exists(data_csv):
+            return
+        df = pd.read_csv(data_csv)
+        counts, ups = {}, {}
+        for s in ["train", "val", "test"]:
+            sub = df[df["split"] == s]
+            counts[s] = len(sub)
+            ups[s] = float(sub["target_direction"].mean()) if len(sub) else float("nan")
+    else:
+        counts = {k: len(data[f"y_{k}"]) for k in ["train", "val", "test"]}
+        ups = {k: float(data[f"y_{k}"].mean()) for k in ["train", "val", "test"]}
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+    names = ["train", "val", "test"]
+    ax[0].bar(names, [counts[k] for k in names], color=["green", "gold", "red"])
+    for k, n in enumerate(names):
+        ax[0].text(k, counts[n], str(counts[n]), ha="center", va="bottom")
+    ax[0].set_title("Window counts per split")
+    ax[0].set_ylabel("n windows")
+    ax[1].bar(names, [ups[k] for k in names], color=["green", "gold", "red"])
+    ax[1].axhline(0.5, color="k", linestyle=":", label="balanced")
+    for k, n in enumerate(names):
+        ax[1].text(k, ups[n], f"{ups[n]:.3f}", ha="center", va="bottom")
+    ax[1].set_title("Up-day rate per split (majority baseline)")
+    ax[1].set_ylabel("up_rate")
+    ax[1].legend()
+    fig.tight_layout()
+    _save(fig, "08_split_balance.png")
+
+
+def plot_09_gate_margins(n_train=None, data_csv="data/processed_GSPC.csv"):
+    """Report Fig 9: T3/T4 measured values vs their gate thresholds."""
+    if n_train is None:
+        if not os.path.exists(data_csv):
+            return
+        df = pd.read_csv(data_csv)
+        n_train = int((df["split"] == "train").sum())
+    g = fz.check_gate()
+    fig, ax = plt.subplots(1, 3, figsize=(13, 4))
+    ax[0].bar(["n_train"], [n_train], color="steelblue")
+    ax[0].axhline(1500, color="red", linestyle="--", label="T3 threshold 1500")
+    ax[0].set_title(f"T3: n_train={n_train}")
+    ax[0].legend()
+    ax[1].bar(["mean LR"], [g["mean"] * 1e3], color="steelblue")
+    ax[1].axhspan(0.8, 1.2, color="green", alpha=0.2, label="T4 band 1e-3 ±20%")
+    ax[1].set_title(f"T4: mean={g['mean']:.2e}")
+    ax[1].set_ylabel("LR (1e-3)")
+    ax[1].legend()
+    limit = 0.05 * g["range"]
+    ax[2].bar(["max step"], [g["max_step"]], color="steelblue")
+    ax[2].axhline(limit, color="red", linestyle="--",
+                  label=f"T4 limit 5% range={limit:.2e}")
+    ax[2].set_title(f"T4: max_step={g['max_step']:.2e}")
+    ax[2].legend()
+    fig.tight_layout()
+    _save(fig, "09_gate_margins.png")
+
+
+def make_all_plots(data=None):
+    plot_01_membership_functions()
+    plot_02_control_and_example()
+    plot_03_price_vol_lr()
+    plot_04_lr_vs_vol()
+    plot_05_lr_over_steps()
     plot_06_loss_curves()
     plot_07_auc_boxplot()
-    plot_lr_vs_vol()
-    plot_lr_over_time()
+    n_train = len(data["X_train"]) if data is not None else None
+    plot_08_split_balance(data=data)
+    plot_09_gate_margins(n_train=n_train)
     print(f"Figures saved to {FIGDIR}/")

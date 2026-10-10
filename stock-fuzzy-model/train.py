@@ -1,4 +1,4 @@
-"""Training loop with regime-aware batching + 5 variants.
+"""Training loop with regime-aware batching + 7 variants.
 
 Batching: train windows pre-sorted by end_date; each epoch permutes the ORDER
 of contiguous batches (never shuffles samples across batches). The final
@@ -6,11 +6,17 @@ partial batch is INCLUDED (no silent drop_last).
 Variants:
   fuzzy              - Mamdani fuzzy LR from batch mean vol_rank
   fixed_1e-3         - constant 1e-3
-  fixed_mean_fuzzy   - constant == mean of fuzzy curve (same average budget)
+  fixed_mean_fuzzy   - constant == mean of Mamdani curve (KEY comparator: same
+                       mean LR budget; RQ1 fairness)
+  cosine             - CosineAnnealingLR from 1e-3 over epochs (schedule control)
+  crisp              - 3-level step on vol_rank thresholds 1/3, 2/3
+                       -> 1.6e-3 / 1.0e-3 / 0.4e-3 (ablation: fuzziness off)
   fuzzy_inverted     - reversed curve (low vol -> low LR; control)
   fuzzy_shuffled_vol - LR drawn from the same empirical distribution
                        (random train vol_rank -> fuzzy LR), decoupled from
                        the batch's own volatility (control for adaptivity).
+mean_lr_used (actual mean LR over all optimizer steps) is recorded per run to
+prove equal-mean fairness (RQ1).
 """
 import copy
 import os
@@ -24,8 +30,13 @@ import config as cfg
 import fuzzy as fz
 from model import DirectionLSTM
 
-VARIANTS = ["fuzzy", "fixed_1e-3", "fixed_mean_fuzzy",
+VARIANTS = ["fuzzy", "fixed_1e-3", "fixed_mean_fuzzy", "cosine", "crisp",
             "fuzzy_inverted", "fuzzy_shuffled_vol"]
+
+# Crisp ablation thresholds on vol_rank -> step LR (no fuzziness)
+CRISP_LO = 1.6e-3
+CRISP_MID = 1.0e-3
+CRISP_HI = 0.4e-3
 
 
 def _batch_index_list(n, batch_size):
@@ -34,13 +45,21 @@ def _batch_index_list(n, batch_size):
     return [idx[i:i + batch_size] for i in range(0, n, batch_size)]
 
 
-def _variant_lr(variant, batch_vol, rng, vr_train=None):
+def _variant_lr(variant, batch_vol, rng, vr_train=None, cos_lr=None):
     if variant == "fuzzy":
         return fz.fuzzy_lr(batch_vol)
     if variant == "fixed_1e-3":
         return cfg.FIXED_LR
     if variant == "fixed_mean_fuzzy":
         return fz.MEAN_LR
+    if variant == "cosine":
+        return float(cos_lr)
+    if variant == "crisp":
+        if batch_vol < 1.0 / 3.0:
+            return CRISP_LO
+        if batch_vol < 2.0 / 3.0:
+            return CRISP_MID
+        return CRISP_HI
     if variant == "fuzzy_inverted":
         return fz.fuzzy_lr(batch_vol, invert=True)
     if variant == "fuzzy_shuffled_vol":
@@ -62,6 +81,8 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
     model = DirectionLSTM(n_features=X_train.shape[2]).to(device)
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.FIXED_LR)
+    scheduler = (torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+                 if variant == "cosine" else None)
 
     Xt = torch.tensor(X_train, dtype=torch.float32)
     yt = torch.tensor(y_train, dtype=torch.float32)
@@ -76,18 +97,21 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
     vol_std = float(bvols.std())
 
     rows = []
+    lrs_used = []  # actual LR applied at every optimizer step (RQ1 fairness)
     history = {"train_loss": [], "val_loss": [], "val_acc": []}
     best_loss, best_state, best_epoch, stale = np.inf, None, 0, 0
 
     for epoch in range(1, epochs + 1):
         order = rng.permutation(len(batches))  # permute batch ORDER only
+        cos_lr = scheduler.get_last_lr()[0] if scheduler else None
         model.train()
         run_loss, n_seen = 0.0, 0
         for bi in order:
             idx = batches[bi]
             xb, yb = Xt[idx].to(device), yt[idx].to(device)
             bvol = float(vr_train[idx].mean())
-            lr = _variant_lr(variant, bvol, rng, vr_train)
+            lr = _variant_lr(variant, bvol, rng, vr_train, cos_lr)
+            lrs_used.append(lr)
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
             optimizer.zero_grad()
@@ -100,6 +124,9 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
             n_seen += len(idx)
             rows.append({"epoch": epoch, "batch": int(bi),
                          "vol": bvol, "lr": lr, "loss": loss.item()})
+
+        if scheduler is not None:
+            scheduler.step()
 
         # validation
         model.eval()
@@ -133,8 +160,10 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
     # NOTE: tolerance (not == 0): pandas std of a constant float column can be
     # ~1e-19 from cancellation error, which would otherwise yield garbage ~0 corr.
     corr = float(log_df["vol"].corr(log_df["lr"])) if lr_std > 1e-12 else float("nan")
+    mean_lr_used = float(np.mean(lrs_used)) if lrs_used else float("nan")
     info = {"best_epoch": best_epoch, "best_val_loss": best_loss,
-            "batch_vol_std": vol_std, "vol_lr_corr": corr}
+            "batch_vol_std": vol_std, "vol_lr_corr": corr,
+            "mean_lr_used": mean_lr_used, "n_steps": len(lrs_used)}
     print(f"[{variant} s{seed}] best_epoch={best_epoch} val_loss={best_loss:.4f} "
-          f"vol_std={vol_std:.3f} corr(vol,lr)={corr:.3f}")
+          f"vol_std={vol_std:.3f} corr(vol,lr)={corr:.3f} mean_lr_used={mean_lr_used:.3e}")
     return model, history, log_df, info

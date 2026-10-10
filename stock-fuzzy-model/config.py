@@ -46,7 +46,7 @@ UNIVERSE = ["^GSPC"]
 EXTENSION = False
 
 START_DATE = "2015-01-01"
-END_DATE = "2026-10-01"  # yfinance `end` is exclusive
+END_DATE = "2025-12-31"  # fixed: report numbers are tied to this end date (yfinance end is exclusive)
 
 WINDOW = 60
 BATCH_SIZE = 32
