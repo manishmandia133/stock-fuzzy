@@ -137,15 +137,16 @@ def plot_07_auc_boxplot(results_csv="results.csv"):
     if not os.path.exists(results_csv):
         return
     df = pd.read_csv(results_csv)
-    fig, ax = plt.subplots(figsize=(9, 4))
-    variants = list(df["variant"].unique())
+    fig, ax = plt.subplots(figsize=(7, 4))
+    variants = [v for v in ["fixed_1e-3", "fuzzy"]
+                if v in set(df["variant"])]
     data = [df.loc[df["variant"] == v, "test_auc"].values for v in variants]
     try:
         ax.boxplot(data, tick_labels=variants)
     except TypeError:
         ax.boxplot(data, labels=variants)  # matplotlib < 3.9 fallback
     ax.set_ylabel("test AUC")
-    ax.set_title("AUC per variant (5 seeds each)")
+    ax.set_title("AUC per method (5 seeds each)")
     plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
     fig.tight_layout()
     _save(fig, "07_auc_boxplot.png")

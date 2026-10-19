@@ -8,8 +8,14 @@ Volatility-aware fuzzy learning-rate control for an LSTM predicting
 ```bash
 pip install -r requirements.txt
 python prepare_data.py   # ^GSPC 2015-01-01..2025-12-31 -> data/*.csv
-python main.py           # = run_all.py: 5 seeds x 7 variants -> results.csv + figs/
+python main.py           # = run_all.py: 5 seeds x 2 methods -> results.csv + figs/
 ```
+
+Active methods (10 runs total):
+
+1. `fixed_1e-3` — constant learning rate `0.001` (baseline).
+2. `fuzzy` — Mamdani fuzzy learning rate driven by the actual training
+   batch's volatility (proposed method).
 
 `END_DATE = "2025-12-31"` is fixed — report numbers are tied to it
 (yfinance `end` is exclusive, `auto_adjust=True`).
@@ -27,29 +33,36 @@ python main.py           # = run_all.py: 5 seeds x 7 variants -> results.csv + f
 - `fuzzy.py` — **Mamdani FIS** (main): Ruspini Low/Med/High on vol_rank,
   Slow/Med/Fast triangles on LR `[0, 2e-3]` (centroids 0.4/1.0/1.6e-3),
   Low→Fast / Med→Med / High→Slow, min/max/centroid, 201-pt lookup,
-  skfuzzy cross-check (<1e-9). Plus the **original Sugeno curve** as a
-  printed reference (not trained).
+  skfuzzy cross-check (<1e-9). The original Sugeno curve is retained in
+  the module for historical reference only (not trained or reported).
 - `model.py` — `DirectionLSTM`: **2 layers**, 64 units, dropout 0.2
   between layers, linear + sigmoid.
 - `train.py` — regime-aware batching (contiguous, batch ORDER shuffled,
-  final partial batch included). **7 variants**: `fuzzy`, `fixed_1e-3`,
-  `fixed_mean_fuzzy` (key comparator, same mean), `cosine`, `crisp`,
-  `fuzzy_inverted`, `fuzzy_shuffled_vol`. Records `mean_lr_used` (RQ1).
+  final partial batch included). **2 methods**: `fixed_1e-3` (constant
+  `0.001`) and `fuzzy` (Mamdani LR from this batch's mean vol_rank).
+  Validates every optimizer step: fixed never changes; fuzzy stays within
+  `[LR_MIN, LR_MAX]`. Records `mean_lr_used`, `lr_min_used`,
+  `lr_max_used`, `lr_std_used`, and the relevant run configuration.
 - `evaluate.py` — AUC + bootstrap 95% CI, acc, MCC, majority baseline,
   `pred_pos_rate`/`pred_std` + constant-predictor flag,
   `train_val_gap = val - train`, high-vol loss variance, leakage flag
   (AUC > 0.60), LogReg baseline.
-- `run_all.py` — T1..T8 gate table, report expected-vs-actual, per-variant
-  mean±std, AUC CIs, `mean_lr_used`, paired t + Wilcoxon vs all 6 others
-  (uncorrected, n=5, Wilcoxon floor 0.0625).
+- `run_all.py` — T1..T8 gate table, report expected-vs-actual, per-method
+  mean±std, AUC CIs, LR-integrity checks, paired t + Wilcoxon
+  (`fuzzy` vs `fixed_1e-3`, uncorrected, n=5, Wilcoxon floor 0.0625),
+  and `run_config.json` with seeds/settings.
 - `plots.py` — `figs/01..09` (MFs, curve + worked example at 0.62,
   price/vol/LR, LR-vs-vol, LR-over-steps, train+val loss with ln2,
   AUC boxplot, split balance, gate margins).
 
 ## Hypothesis
 
-Fuzzy LR is more **stable** (esp. high-vol loss variance) than a fixed LR
-**with the same mean**, without hurting AUC. Key comparator:
-`fixed_mean_fuzzy`. RQ4 attribution: `cosine`, `crisp`, `fuzzy_inverted`,
-`fuzzy_shuffled_vol`. Null results are reported as null — see NOTES.md
-and REPORT_UPDATES.md after a run.
+Fuzzy LR is more **stable** (especially high-vol loss variance) than the
+fixed `0.001` baseline without hurting AUC. Null results are reported as
+null — see NOTES.md and REPORT_UPDATES.md after a run.
+
+## Outdated results
+
+`outdated/results_7variants.csv` and `outdated/logs/` are from the previous
+seven-variant experiment and are kept only for history. They are **not**
+results of the current two-method experiment.

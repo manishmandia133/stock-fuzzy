@@ -78,10 +78,9 @@ LR_CURVE = np.array([mamdani_lr(v) for v in V_GRID])
 MEAN_LR = float(LR_CURVE.mean())
 
 
-def fuzzy_lr(v, invert=False) -> float:
+def fuzzy_lr(v) -> float:
     """Map vol_rank in [0,1] -> LR via linear interp on the precomputed curve."""
-    c = LR_CURVE[::-1] if invert else LR_CURVE
-    return float(np.interp(np.clip(v, 0, 1), V_GRID, c))
+    return float(np.interp(np.clip(v, 0, 1), V_GRID, LR_CURVE))
 
 
 def skfuzzy_reference_curve():

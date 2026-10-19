@@ -1,0 +1,75 @@
+=== fuzzy gate (T4, Mamdani FIS) ===
+  max_step: 1.0316287318947728e-05
+  range: 0.0012000000000000001
+  mean: 0.001
+  smooth_ok: True
+  mean_ok: True
+  mono_ok: True
+  ruspini_maxdiff: 0.0
+  ruspini_ok: True
+  skfuzzy_maxdiff: 3.144186300207963e-17
+  skfuzzy_ok: True
+  pass: True
+  NOTE: curve/corr gates are tautological — they verify the controller shape, not training benefit.
+  T4: PASS
+=== data ===
+Downloading 1-1 / 1 ...
+Tickers contributing usable windows: 1
+train: X=(1863, 60, 5) y=(1863,)
+val: X=(352, 60, 5) y=(352,)
+test: X=(353, 60, 5) y=(353,)
+  train: pos_rate=0.541 majority_baseline=0.541
+  val: pos_rate=0.534 majority_baseline=0.534
+  test: pos_rate=0.578 majority_baseline=0.578
+kept tickers: ['^GSPC']
+T2: PASS (chronological split asserts + 3-window label spot-check)
+T3: PASS (n_train=1863 > 1500, no NaN)
+=== split stats ===
+  train: n=1863 up_rate=0.5411 majority=0.5411
+  val: n=352 up_rate=0.5341 majority=0.5341
+  test: n=353 up_rate=0.5779 majority=0.5779
+=== reproducibility check (T1: data build twice) ===
+Tickers contributing usable windows: 1
+train: X=(1863, 60, 5) y=(1863,)
+val: X=(352, 60, 5) y=(352,)
+test: X=(353, 60, 5) y=(353,)
+  train: pos_rate=0.541 majority_baseline=0.541
+  val: pos_rate=0.534 majority_baseline=0.534
+  test: pos_rate=0.578 majority_baseline=0.578
+  T1: PASS (checksum=202000.3771, expected=202000.3771)
+=== report expected-vs-actual (Sec 6.1) ===
+  n_train: actual=1863 expected=1863 -> MATCHES REPORT
+  n_val: actual=352 expected=352 -> MATCHES REPORT
+  n_test: actual=353 expected=353 -> MATCHES REPORT
+  up_train: actual=0.5410628019323671 expected=0.541 -> MATCHES REPORT
+  up_val: actual=0.5340909090909091 expected=0.534 -> MATCHES REPORT
+  up_test: actual=0.5779036827195467 expected=0.578 -> MATCHES REPORT
+  checksum: actual=202000.37713316578 expected=202000.3771 -> MATCHES REPORT
+[fixed_1e-3 s0] early stop at epoch 12 (best 6)
+[fixed_1e-3 s0] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s0 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fixed_1e-3 s0 val_loss ~ ln2 (0.6909); model may not be learning.
+[fuzzy s0] early stop at epoch 12 (best 6)
+[fuzzy s0] best_epoch=6 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
+NOTE: fuzzy s0 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fuzzy s0 val_loss ~ ln2 (0.6909); model may not be learning.
+[fixed_1e-3 s1] early stop at epoch 12 (best 6)
+[fixed_1e-3 s1] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s1 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fixed_1e-3 s1 val_loss ~ ln2 (0.6910); model may not be learning.
+[fuzzy s1] early stop at epoch 12 (best 6)
+[fuzzy s1] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
+NOTE: fuzzy s1 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fuzzy s1 val_loss ~ ln2 (0.6910); model may not be learning.
+[fixed_1e-3 s2] early stop at epoch 10 (best 4)
+[fixed_1e-3 s2] best_epoch=4 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s2 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fixed_1e-3 s2 val_loss ~ ln2 (0.6910); model may not be learning.
+[fuzzy s2] early stop at epoch 7 (best 1)
+[fuzzy s2] best_epoch=1 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
+NOTE: fuzzy s2 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fuzzy s2 val_loss ~ ln2 (0.6910); model may not be learning.
+[fixed_1e-3 s3] early stop at epoch 13 (best 7)
+[fixed_1e-3 s3] best_epoch=7 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s3 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fixed_1e-3 s3 val_loss ~ ln2 (0.6909); model may not be learning.

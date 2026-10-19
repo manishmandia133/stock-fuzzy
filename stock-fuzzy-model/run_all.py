@@ -1,6 +1,8 @@
-"""Multi-seed experiment driver: seeds x variants -> results.csv + stats + plots."""
+"""Multi-seed experiment driver: 5 seeds x 2 methods -> results.csv + stats + plots."""
+import json
 import os
 import sys
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -13,8 +15,8 @@ from evaluate import evaluate_run
 from plots import make_all_plots
 from train import VARIANTS, train_variant
 
-COMPARE_VARIANTS = ["fixed_1e-3", "fixed_mean_fuzzy", "cosine", "crisp",
-                    "fuzzy_inverted", "fuzzy_shuffled_vol"]
+BASELINE = "fixed_1e-3"
+PROPOSED = "fuzzy"
 COMPARE_METRICS = ["test_auc", "best_val_loss", "highvol_loss_var"]
 
 # Report expectations (Sec 6.1): compared against actuals at runtime.
@@ -54,12 +56,6 @@ def main(seeds=None, variants=None, make_plots=True):
         print("T4 GATE FAILED — fix fuzzy.py before training.")
         sys.exit(1)
     print("  T4: PASS")
-    print("=== prior Sugeno prototype (reference only, not trained) ===")
-    sg = fz.sugeno_gate()
-    for k, v in sg.items():
-        print(f"  sugeno_{k}: {v}")
-    print("  (report traceability: prior prototype mean ~9.63e-4, "
-          "max step ~1.79e-5)")
 
     print("=== data ===")
     raw = D.batch_download(cfg.UNIVERSE, cfg.START_DATE, cfg.END_DATE)
@@ -134,9 +130,52 @@ def main(seeds=None, variants=None, make_plots=True):
                       f"({history['val_loss'][-1]:.4f}); model may not be learning.")
 
     res = pd.DataFrame(rows)
-    res.to_csv("results.csv", index=False)
 
-    print("=== results: mean ± std per variant ===")
+    # ---- experimental-integrity checks -----------------------------------
+    assert set(res["variant"]) == set(VARIANTS) == {BASELINE, PROPOSED}, \
+        f"unexpected variants in results: {sorted(set(res['variant']))}"
+    for seed in seeds:
+        seed_rows = res[res["seed"] == seed]
+        assert set(seed_rows["variant"]) == {BASELINE, PROPOSED}, \
+            f"seed {seed} does not contain exactly both methods"
+        assert seed_rows["n_train"].nunique() == 1, \
+            f"seed {seed}: train size differs across methods"
+        assert seed_rows["n_val"].nunique() == 1, \
+            f"seed {seed}: val size differs across methods"
+    # Baseline LR must be exactly constant; fuzzy must vary and stay in bounds.
+    base = res[res["variant"] == BASELINE]
+    assert bool((base["lr_min_used"] == cfg.FIXED_LR).all()), \
+        "fixed_1e-3 did not use exactly cfg.FIXED_LR"
+    assert bool((base["lr_max_used"] == cfg.FIXED_LR).all()), \
+        "fixed_1e-3 changed its learning rate"
+    assert bool((base["lr_std_used"] == 0.0).all()), \
+        "fixed_1e-3 learning rate has non-zero variance"
+    fzr = res[res["variant"] == PROPOSED]
+    assert bool((fzr["lr_min_used"] >= cfg.LR_MIN).all()), "fuzzy LR below bounds"
+    assert bool((fzr["lr_max_used"] <= cfg.LR_MAX).all()), "fuzzy LR above bounds"
+    assert bool((fzr["lr_std_used"] > 0.0).all()), "fuzzy LR never changed"
+    assert bool((fzr["vol_lr_corr"] < -0.7).all()), \
+        "fuzzy LR did not respond inversely to batch volatility (T6)"
+
+    res.to_csv("results.csv", index=False)
+    with open("run_config.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "methods": VARIANTS,
+            "seeds": list(seeds),
+            "config": {
+                "universe": cfg.UNIVERSE, "start_date": cfg.START_DATE,
+                "end_date": cfg.END_DATE, "window": cfg.WINDOW,
+                "batch_size": cfg.BATCH_SIZE, "max_epochs": cfg.EPOCHS,
+                "patience": cfg.PATIENCE, "grad_clip": cfg.GRAD_CLIP,
+                "train_frac": cfg.TRAIN_FRAC, "val_frac": cfg.VAL_FRAC,
+                "features": cfg.FEATURE_COLS, "target": cfg.TARGET_COL,
+                "fixed_lr": cfg.FIXED_LR, "fuzzy_lr_min": cfg.LR_MIN,
+                "fuzzy_lr_max": cfg.LR_MAX,
+            },
+        }, f, indent=2)
+
+    print("=== results: mean ± std per method ===")
     with pd.option_context("display.width", 200, "display.max_columns", 20):
         print(res.groupby("variant")[["test_auc", "test_acc", "test_mcc",
                                       "best_val_loss", "train_val_gap",
@@ -152,18 +191,28 @@ def main(seeds=None, variants=None, make_plots=True):
     print(f"=== constant-predictor summary: {n_const}/{len(res)} runs "
           f"predict a single class at 0.5 threshold ===")
 
-    print("=== paired tests T8: fuzzy vs all others ===")
+    print(f"=== paired tests T8: {PROPOSED} vs {BASELINE} ===")
     print("  (paired t + Wilcoxon per seed; p-values UNCORRECTED; "
           "n=5 seeds; Wilcoxon min achievable p=0.0625)")
-    fz_res = res[res["variant"] == "fuzzy"].set_index("seed").sort_index()
-    for other in COMPARE_VARIANTS:
-        ot = res[res["variant"] == other].set_index("seed").sort_index()
-        print(f"fuzzy vs {other}:")
-        for metric in COMPARE_METRICS:
-            _paired(fz_res[metric].values, ot[metric].values,
-                    f"  {metric}")
+    fz_res = res[res["variant"] == PROPOSED].set_index("seed").sort_index()
+    base_res = res[res["variant"] == BASELINE].set_index("seed").sort_index()
+    print(f"{PROPOSED} vs {BASELINE}:")
+    for metric in COMPARE_METRICS:
+        _paired(fz_res[metric].values, base_res[metric].values,
+                f"  {metric}")
 
-    print("=== mean_lr_used per variant (RQ1 equal-mean fairness) ===")
+    print("=== learning-rate integrity ===")
+    for variant in [BASELINE, PROPOSED]:
+        sub = res[res["variant"] == variant]
+        print(f"  {variant}: lr_used range=[{sub['lr_min_used'].min():.3e}, "
+              f"{sub['lr_max_used'].max():.3e}] "
+              f"mean={sub['mean_lr_used'].mean():.3e} "
+              f"std={sub['lr_std_used'].mean():.3e}")
+    print(f"  {BASELINE}: PASS (exactly {cfg.FIXED_LR:g} at every step)")
+    print(f"  {PROPOSED}: PASS (inside [{cfg.LR_MIN:g}, {cfg.LR_MAX:g}], "
+          f"corr(vol,lr)<-0.7)")
+
+    print("=== mean_lr_used per method ===")
     with pd.option_context("display.width", 200, "display.max_columns", 10):
         print(res.groupby("variant")[["mean_lr_used"]].agg(["mean", "std", "min", "max"]).to_string())
 
@@ -177,9 +226,9 @@ def main(seeds=None, variants=None, make_plots=True):
     print(f"  T3 scope windows/NaN     : PASS (n_train={len(data['X_train'])})")
     print(f"  T4 fuzzy curve           : {'PASS' if g['pass'] else 'FAIL'} (tautological: shape only)")
     print("  T5 regime batching       : PASS (all batch_vol_std > 0.15)")
-    print("  T6 fuzzy corr(vol,lr)    : PASS (tautological: schedule check)")
+    print("  T6 fuzzy LR bounds/corr  : PASS (in bounds; corr(vol,lr) < -0.7)")
     print(f"  T7 leakage flag          : {'FLAG' if n_leak else 'PASS'}")
-    print("  T8 paired stats          : DONE")
+    print("  T8 paired stats          : DONE (fuzzy vs fixed_1e-3 only)")
 
     if make_plots:
         make_all_plots(data=data)

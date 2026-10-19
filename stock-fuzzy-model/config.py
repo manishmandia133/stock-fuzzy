@@ -64,11 +64,15 @@ TARGET_COL = "target_direction"
 VOL_COL = "volatility_14d"
 VOL_COL_IDX = FEATURE_COLS.index(VOL_COL)
 
-# ---- LR constants ----
-LR_LOW = 1.5e-3   # low vol  -> higher LR (legacy constant, kept for reference)
+# ---- Active learning-rate methods ----
+# fixed_1e-3: constant baseline (never changes).
+# fuzzy: Mamdani controller below (low vol -> higher LR, high vol -> lower LR).
+FIXED_LR = 1e-3
+
+# ---- Prior Sugeno prototype anchors (reference only; not trained) ----
+LR_LOW = 1.5e-3
 LR_MED = 1.0e-3
 LR_HIGH = 0.4e-3
-FIXED_LR = 1e-3
 
 # ---- Output LR universe (Mamdani consequent) ----
 LR_MIN = 0.0
