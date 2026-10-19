@@ -73,3 +73,63 @@ NOTE: fuzzy s2 val_loss ~ ln2 (0.6910); model may not be learning.
 [fixed_1e-3 s3] best_epoch=7 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
 NOTE: fixed_1e-3 s3 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
 NOTE: fixed_1e-3 s3 val_loss ~ ln2 (0.6909); model may not be learning.
+[fuzzy s3] early stop at epoch 13 (best 7)
+[fuzzy s3] best_epoch=7 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
+NOTE: fuzzy s3 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fuzzy s3 val_loss ~ ln2 (0.6909); model may not be learning.
+[fixed_1e-3 s4] early stop at epoch 10 (best 4)
+[fixed_1e-3 s4] best_epoch=4 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s4 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fixed_1e-3 s4 val_loss ~ ln2 (0.6910); model may not be learning.
+[fuzzy s4] early stop at epoch 10 (best 4)
+[fuzzy s4] best_epoch=4 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
+NOTE: fuzzy s4 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
+NOTE: fuzzy s4 val_loss ~ ln2 (0.6910); model may not be learning.
+=== results: mean ± std per method ===
+            test_auc            test_acc      test_mcc      best_val_loss           train_val_gap           pred_pos_rate       pred_std          
+                mean       std      mean  std     mean  std          mean       std          mean       std          mean  std      mean       std
+variant                                                                                                                                           
+fixed_1e-3  0.510442  0.032433  0.577904  0.0      0.0  0.0      0.690843  0.000033      0.000570  0.000285           1.0  0.0  0.000103  0.000022
+fuzzy       0.506185  0.034086  0.577904  0.0      0.0  0.0      0.690850  0.000038      0.000435  0.000535           1.0  0.0  0.000112  0.000030
+=== test AUC per seed + bootstrap 95% CI ===
+  fixed_1e-3 s0: AUC=0.5231 [0.4616, 0.5860] pos_rate=1.000 pred_std=0.0001
+  fuzzy s0: AUC=0.5198 [0.4584, 0.5842] pos_rate=1.000 pred_std=0.0001
+  fixed_1e-3 s1: AUC=0.5244 [0.4675, 0.5829] pos_rate=1.000 pred_std=0.0001
+  fuzzy s1: AUC=0.5151 [0.4564, 0.5742] pos_rate=1.000 pred_std=0.0001
+  fixed_1e-3 s2: AUC=0.5069 [0.4466, 0.5659] pos_rate=1.000 pred_std=0.0001
+  fuzzy s2: AUC=0.4999 [0.4403, 0.5605] pos_rate=1.000 pred_std=0.0001
+  fixed_1e-3 s3: AUC=0.4567 [0.3941, 0.5185] pos_rate=1.000 pred_std=0.0001
+  fuzzy s3: AUC=0.4522 [0.3902, 0.5132] pos_rate=1.000 pred_std=0.0001
+  fixed_1e-3 s4: AUC=0.5412 [0.4784, 0.6014] pos_rate=1.000 pred_std=0.0001
+  fuzzy s4: AUC=0.5439 [0.4822, 0.6049] pos_rate=1.000 pred_std=0.0001
+=== constant-predictor summary: 10/10 runs predict a single class at 0.5 threshold ===
+=== paired tests T8: fuzzy vs fixed_1e-3 ===
+  (paired t + Wilcoxon per seed; p-values UNCORRECTED; n=5 seeds; Wilcoxon min achievable p=0.0625)
+fuzzy vs fixed_1e-3:
+    test_auc: paired-t p=0.1038 | wilcoxon p=0.1250
+    best_val_loss: paired-t p=0.2455 | wilcoxon p=0.1875
+    highvol_loss_var: paired-t p=0.0084 | wilcoxon p=0.0625
+=== learning-rate integrity ===
+  fixed_1e-3: lr_used range=[1.000e-03, 1.000e-03] mean=1.000e-03 std=0.000e+00
+  fuzzy: lr_used range=[4.773e-04, 1.527e-03] mean=9.991e-04 std=2.934e-04
+  fixed_1e-3: PASS (exactly 0.001 at every step)
+  fuzzy: PASS (inside [0, 0.002], corr(vol,lr)<-0.7)
+=== mean_lr_used per method ===
+           mean_lr_used                         
+                   mean  std       min       max
+variant                                         
+fixed_1e-3     0.001000  0.0  0.001000  0.001000
+fuzzy          0.000999  0.0  0.000999  0.000999
+T7: PASS (no test AUC > 0.60)
+T8: DONE (paired stats above; do not claim fuzzy wins unless tests support it)
+=== GATE SUMMARY T1..T8 ===
+  T1 data reproducibility : PASS
+  T2 split/label checks    : PASS (asserts in data.py)
+  T3 scope windows/NaN     : PASS (n_train=1863)
+  T4 fuzzy curve           : PASS (tautological: shape only)
+  T5 regime batching       : PASS (all batch_vol_std > 0.15)
+  T6 fuzzy LR bounds/corr  : PASS (in bounds; corr(vol,lr) < -0.7)
+  T7 leakage flag          : PASS
+  T8 paired stats          : DONE (fuzzy vs fixed_1e-3 only)
+Figures saved to figs/
+Done. results.csv written.
