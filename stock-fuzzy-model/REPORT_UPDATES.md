@@ -1,7 +1,7 @@
 # REPORT_UPDATES.md — exact report changes required by this code state
 
 Numbers below come from a real full experiment run
-(seven variants x 5 seeds = 35 runs, 2026-10-20). Do not invent or reuse
+(four variants x 5 seeds = 20 runs, 2026-10-20). Do not invent or reuse
 archived values.
 
 ## RQ1 + Sec 2.5 + 3.3 + 4.4 + 6.2 (controller: two-input Mamdani)
@@ -38,13 +38,12 @@ archived values.
   `model.py` is the source of truth.
 - `WINDOW=30`, `BATCH_SIZE=32`, `EPOCHS=40`, `PATIENCE=6`, `GRAD_CLIP=1.0`.
 - `drop_last` removed: the final partial batch is included.
-- Variants: **7** — five fixed LRs (`2e-4`, `5e-4`, `1e-3`, `1.5e-3`,
-  `2e-3`) plus `fuzzy` (two-input Mamdani) and `fuzzy_vol_only` (one-input
-  ablation). All other methods removed from the active experiment.
+- Variants: **4** — two fixed LRs (`2e-4`, `5e-4`) plus `fuzzy`
+  (two-input Mamdani) and `fuzzy_vol_only` (one-input ablation). All other
+  methods removed from the active experiment.
 - `BEST_FIXED` is selected by lowest mean `best_val_loss` (validation
-  only); report the full grid: `fixed_2e-4` 0.692180, `fixed_5e-4`
-  0.692329, `fixed_2e-3` 0.692329, `fixed_1p5e-3` 0.692362,
-  `fixed_1e-3` 0.692448. Selected `BEST_FIXED = fixed_2e-4`.
+  only); report both fixed LRs: `fixed_2e-4` 0.692180, `fixed_5e-4`
+  0.692329. Selected `BEST_FIXED = fixed_2e-4`.
 - Regime batching unchanged: contiguous, batch ORDER shuffled per epoch.
 
 ## Sec 6.1 (data: actuals vs report)
@@ -67,9 +66,9 @@ archived values.
   RUN RESULT: `fuzzy` 0.5343 ± 0.0089 vs `fixed_2e-4` 0.5232 ± 0.0378,
   p=0.4397 (0.6250); `fuzzy_vol_only` 0.5349 ± 0.0115, p=0.3841
   (0.6250). No significant difference either way.
-- All 35 runs were constant predictors (val_loss ≈ ln2; test accuracy =
+- All 20 runs were constant predictors (val_loss ≈ ln2; test accuracy =
   0.5770 majority; MCC = 0.0). Report the null honestly.
 - Claim rule: no "fuzzy beats fixed" unless paired tests support it
   (p-values uncorrected, n=5, Wilcoxon floor 0.0625). A null is a null.
-- Also report: constant-predictor count (35/35), val_loss≈ln2 note,
+- Also report: constant-predictor count (20/20), val_loss≈ln2 note,
   T1..T8 summary table, and every gate result.

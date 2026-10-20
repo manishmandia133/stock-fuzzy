@@ -1,27 +1,28 @@
 """Plots. All figures -> figs/ as PNG (300 dpi), numbered 01..07 (+ extras)."""
+
 import os
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-matplotlib_version = tuple(int(t) for t in matplotlib.__version__.split(".")[:2])
+from matplotlib.figure import Figure
 
 import config as cfg
 import fuzzy as fz
 
 FIGDIR = "figs"
 LN2 = float(np.log(2))
+LR_SCALE = 1e3
 
 
-def _save(fig, name):
+def _save(fig: Figure, name: str) -> None:
+    """Save a figure to the configured output directory and close it."""
     os.makedirs(FIGDIR, exist_ok=True)
     fig.savefig(os.path.join(FIGDIR, name), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_01_membership_functions():
+def plot_01_membership_functions() -> None:
     """Two input MF sets (vol_rank, loss_trend) + output LR MFs."""
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     v = fz.V_GRID
@@ -39,7 +40,7 @@ def plot_01_membership_functions():
     ax[1].set_title("Input MFs: validation loss_trend")
     ax[1].set_xlabel("loss_trend")
     ax[1].legend()
-    u = fz.OUT_GRID * 1e3
+    u = fz.OUT_GRID * LR_SCALE
     ax[2].plot(u, fz.SLOW_MF, label="Slow (c=0.4e-3)")
     ax[2].plot(u, fz.MED_MF, label="Medium (c=1.0e-3)")
     ax[2].plot(u, fz.FAST_MF, label="Fast (c=1.6e-3)")
@@ -50,19 +51,23 @@ def plot_01_membership_functions():
     _save(fig, "01_membership_functions.png")
 
 
-def plot_02_lr_surface():
+def plot_02_lr_surface() -> None:
     """LR surface heatmap + slices at falling/plateau/rising trend."""
     fig, ax = plt.subplots(1, 2, figsize=(13, 4))
-    mesh = ax[0].pcolormesh(fz.V_GRID, fz.T_GRID,
-                            fz.LR_SURFACE.T * 1e3, shading="auto",
-                            cmap="viridis")
+    mesh = ax[0].pcolormesh(
+        fz.V_GRID, fz.T_GRID, fz.LR_SURFACE.T * LR_SCALE, shading="auto", cmap="viridis"
+    )
     fig.colorbar(mesh, ax=ax[0], label="LR (1e-3)")
     ax[0].set_title("Mamdani LR surface: (vol_rank, loss_trend)")
     ax[0].set_xlabel("vol_rank")
     ax[0].set_ylabel("loss_trend")
     for trend, style in [(-1.0, ":"), (0.0, "-"), (1.0, "--")]:
-        ax[1].plot(fz.V_GRID, fz.LR_SURFACE[:, np.argmin(np.abs(fz.T_GRID - trend))] * 1e3,
-                   style, label=f"trend={trend:+.0f}")
+        ax[1].plot(
+            fz.V_GRID,
+            fz.LR_SURFACE[:, np.argmin(np.abs(fz.T_GRID - trend))] * LR_SCALE,
+            style,
+            label=f"trend={trend:+.0f}",
+        )
     ax[1].set_title("Surface slices (non-increasing in vol_rank)")
     ax[1].set_xlabel("vol_rank")
     ax[1].set_ylabel("LR (1e-3)")
@@ -71,7 +76,8 @@ def plot_02_lr_surface():
     _save(fig, "02_lr_surface_heatmap.png")
 
 
-def plot_03_price_vol_lr(data_csv="data/processed_GSPC.csv"):
+def plot_03_price_vol_lr(data_csv: str = "data/processed_GSPC.csv") -> None:
+    """Price, 14-day volatility, and vol-only fuzzy LR with split shading."""
     if not os.path.exists(data_csv):
         return
     df = pd.read_csv(data_csv, parse_dates=["Date"])
@@ -82,20 +88,21 @@ def plot_03_price_vol_lr(data_csv="data/processed_GSPC.csv"):
     ax[1].plot(df["Date"], df["volatility_14d"], color="orange")
     ax[1].set_ylabel("volatility_14d")
     lr_ref = np.array([fz.fuzzy_lr_vol_only(v) for v in df["vol_rank"].values])
-    ax[2].plot(df["Date"], lr_ref * 1e3, color="green")
+    ax[2].plot(df["Date"], lr_ref * LR_SCALE, color="green")
     ax[2].set_ylabel("fuzzy LR vol-only (1e-3)")
     for a in ax:
         for s, c in [("train", "green"), ("val", "gold"), ("test", "red")]:
             sub = df[df["split"] == s]
             if len(sub):
-                a.axvspan(sub["Date"].iloc[0], sub["Date"].iloc[-1],
-                          color=c, alpha=0.07)
+                a.axvspan(
+                    sub["Date"].iloc[0], sub["Date"].iloc[-1], color=c, alpha=0.07
+                )
     ax[2].set_xlabel("Date")
     fig.tight_layout()
     _save(fig, "03_price_vol_lr.png")
 
 
-def plot_06_loss_curves(logdir="logs"):
+def plot_06_loss_curves(logdir: str = "logs") -> None:
     """Train AND val loss per variant (mean +/- std over seeds) + ln2 line."""
     from train import VARIANTS
 
@@ -114,7 +121,7 @@ def plot_06_loss_curves(logdir="logs"):
                 L = max(len(v) for v in vals)
                 arr = np.full((len(vals), L), np.nan)
                 for i, v in enumerate(vals):
-                    arr[i, :len(v)] = v
+                    arr[i, : len(v)] = v
                 m = np.nanmean(arr, axis=0)
                 sd = np.nanstd(arr, axis=0)
                 ep = np.arange(1, L + 1)
@@ -129,7 +136,8 @@ def plot_06_loss_curves(logdir="logs"):
     _save(fig, "06_loss_curves.png")
 
 
-def plot_07_auc_boxplot(results_csv="results.csv"):
+def plot_07_auc_boxplot(results_csv: str = "results.csv") -> None:
+    """Boxplot of test AUC per variant."""
     from train import VARIANTS
 
     if not os.path.exists(results_csv):
@@ -149,18 +157,27 @@ def plot_07_auc_boxplot(results_csv="results.csv"):
     _save(fig, "07_auc_boxplot.png")
 
 
-def plot_04_lr_vs_vol(logdir="logs", seed=0):
+def plot_04_lr_vs_vol(logdir: str = "logs", seed: int = 0) -> None:
+    """Scatter fuzzy LR against batch volatility, colored by trend."""
     p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
     if not os.path.exists(p):
         return
     df = pd.read_csv(p)
     fig, ax = plt.subplots(figsize=(6, 4))
     if "trend" in df.columns:
-        sc = ax.scatter(df["vol"], np.array(df["lr"]) * 1e3, c=df["trend"],
-                        cmap="coolwarm", vmin=-1, vmax=1, s=8, alpha=0.6)
+        sc = ax.scatter(
+            df["vol"],
+            np.array(df["lr"]) * LR_SCALE,
+            c=df["trend"],
+            cmap="coolwarm",
+            vmin=-1,
+            vmax=1,
+            s=8,
+            alpha=0.6,
+        )
         fig.colorbar(sc, ax=ax, label="validation loss_trend")
     else:
-        ax.scatter(df["vol"], np.array(df["lr"]) * 1e3, s=8, alpha=0.5)
+        ax.scatter(df["vol"], np.array(df["lr"]) * LR_SCALE, s=8, alpha=0.5)
     ax.set_xlabel("batch volatility (mean vol_rank)")
     ax.set_ylabel("LR (1e-3)")
     ax.set_title(f"Fuzzy LR vs volatility (color=trend, seed {seed})")
@@ -168,21 +185,20 @@ def plot_04_lr_vs_vol(logdir="logs", seed=0):
     _save(fig, f"04_lr_vs_vol_s{seed}.png")
 
 
-def plot_05_lr_over_steps(logdir="logs", seed=0):
+def plot_05_lr_over_steps(logdir: str = "logs", seed: int = 0) -> None:
     """LR, volatility, and trend over optimizer steps (shuffled batch order)."""
     p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
     if not os.path.exists(p):
         return
     df = pd.read_csv(p)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax1.plot(df["lr"].values * 1e3, label="LR")
+    ax1.plot(df["lr"].values * LR_SCALE, label="LR")
     ax1.set_ylabel("LR (1e-3)")
     ax1.legend(loc="upper right")
     ax1.set_title(f"LR schedule over optimizer steps (seed {seed})")
     ax2.plot(df["vol"].values, color="orange", alpha=0.6, label="vol_rank")
     if "trend" in df.columns:
-        ax2.plot(df["trend"].values, color="purple", alpha=0.8,
-                 label="loss_trend")
+        ax2.plot(df["trend"].values, color="purple", alpha=0.8, label="loss_trend")
     ax2.set_xlabel("optimizer step (shuffled batch order, not time)")
     ax2.set_ylabel("input value")
     ax2.legend(loc="upper right")
@@ -190,7 +206,10 @@ def plot_05_lr_over_steps(logdir="logs", seed=0):
     _save(fig, f"05_lr_over_step_s{seed}.png")
 
 
-def plot_08_split_balance(data=None, data_csv="data/processed_GSPC.csv"):
+def plot_08_split_balance(
+    data: dict[str, np.ndarray] | None = None,
+    data_csv: str = "data/processed_GSPC.csv",
+) -> None:
     """Report Fig 8: per-split window counts + up-day class balance."""
     if data is None:
         if not os.path.exists(data_csv):
@@ -222,7 +241,10 @@ def plot_08_split_balance(data=None, data_csv="data/processed_GSPC.csv"):
     _save(fig, "08_split_balance.png")
 
 
-def plot_09_gate_margins(n_train=None, data_csv="data/processed_GSPC.csv"):
+def plot_09_gate_margins(
+    n_train: int | None = None,
+    data_csv: str = "data/processed_GSPC.csv",
+) -> None:
     """Report Fig 9: T3/T4 measured values vs their gate thresholds."""
     if n_train is None:
         if not os.path.exists(data_csv):
@@ -237,22 +259,25 @@ def plot_09_gate_margins(n_train=None, data_csv="data/processed_GSPC.csv"):
     ax[0].axhline(1500, color="red", linestyle="--", label="T3 threshold 1500")
     ax[0].set_title(f"T3: n_train={n_train}")
     ax[0].legend()
-    ax[1].bar(["mean LR"], [g["mean"] * 1e3], color="steelblue")
-    ax[1].axhspan(0.75, 1.25, color="green", alpha=0.2,
-                  label="T4 band 1e-3 ±25%")
+    ax[1].bar(["mean LR"], [g["mean"] * LR_SCALE], color="steelblue")
+    ax[1].axhspan(0.75, 1.25, color="green", alpha=0.2, label="T4 band 1e-3 ±25%")
     ax[1].set_title(f"T4: mean={g['mean']:.2e}")
     ax[1].set_ylabel("LR (1e-3)")
     ax[1].legend()
     ax[2].bar(["max positive step"], [max_pos], color="steelblue")
-    ax[2].axhline(g["mono_tol"], color="red", linestyle="--",
-                  label=f"T4 tolerance={g['mono_tol']:.2e}")
+    ax[2].axhline(
+        g["mono_tol"],
+        color="red",
+        linestyle="--",
+        label=f"T4 tolerance={g['mono_tol']:.2e}",
+    )
     ax[2].set_title(f"T4: max positive step={max_pos:.2e}")
     ax[2].legend()
     fig.tight_layout()
     _save(fig, "09_gate_margins.png")
 
 
-def make_all_plots(data=None):
+def make_all_plots(data: dict[str, np.ndarray] | None = None) -> None:
     plot_01_membership_functions()
     plot_02_lr_surface()
     plot_03_price_vol_lr()

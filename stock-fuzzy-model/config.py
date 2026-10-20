@@ -1,4 +1,5 @@
 """Project-wide constants. Torch is imported lazily so data/fuzzy scripts run without it."""
+
 import random
 
 import numpy as np
@@ -21,7 +22,7 @@ def set_seed(s: int) -> None:
         pass
 
 
-def get_device():
+def get_device() -> object:
     """Resolve torch device lazily (CPU if torch/CUDA unavailable)."""
     try:
         import torch
@@ -31,10 +32,11 @@ def get_device():
         return "cpu"
 
 
-DEVICE = None  # resolved lazily via get_device(); kept for backward compat
+DEVICE: object | None = None  # resolved lazily via get_device()
 
 
-def resolve_device():
+def resolve_device() -> object:
+    """Return the cached torch device, resolving it on first use."""
     global DEVICE
     if DEVICE is None:
         DEVICE = get_device()
@@ -67,19 +69,15 @@ VAL_FRAC = 0.15
 FEATURE_COLS = ["return_1d", "hl_range", "oc_ret", "vol_chg", "volatility_14d"]
 TARGET_COL = "target_direction"
 VOL_COL = "volatility_14d"
-VOL_COL_IDX = FEATURE_COLS.index(VOL_COL)
 
-# ---- Active learning-rate methods (5 fixed grid + 2 fuzzy) ----
-# Five fixed-LR baselines. BEST_FIXED is chosen AFTER training using
+# ---- Active learning-rate methods (2 fixed grid + 2 fuzzy) ----
+# Two fixed-LR baselines. BEST_FIXED is chosen AFTER training using
 # validation loss only (lowest mean best_val_loss across seeds), never test.
 FIXED_LR = 1e-3
-FIXED_LR_GRID = [2e-4, 5e-4, 1e-3, 1.5e-3, 2e-3]
+FIXED_LR_GRID = [2e-4, 5e-4]
 FIXED_LR_VARIANTS = {
     "fixed_2e-4": 2e-4,
     "fixed_5e-4": 5e-4,
-    "fixed_1e-3": 1e-3,
-    "fixed_1p5e-3": 1.5e-3,
-    "fixed_2e-3": 2e-3,
 }
 
 # Trend input: validation-loss slope, normalised by 0.005 and clipped to [-1, 1].

@@ -1,9 +1,9 @@
-"""Thin runner: full experiment via run_all.py (PLAN layout).
+"""Single experiment entry point.
 
 Run:
-    python run_all.py            # 5 seeds x 7 variants -> results.csv
-    python main.py               # same as run_all.py (convenience)
+    python main.py    # 5 seeds x 4 variants -> results.csv + figs/
 """
+
 from run_all import main
 
 if __name__ == "__main__":

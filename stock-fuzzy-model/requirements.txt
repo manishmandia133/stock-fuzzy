@@ -1,8 +1,8 @@
-yfinance
-scikit-fuzzy
-torch
-numpy
-pandas
-matplotlib
-scikit-learn
-scipy
+yfinance==1.7.0
+scikit-fuzzy==0.5.0
+torch==2.14.1
+numpy==2.5.3
+pandas==3.0.6
+matplotlib==3.11.2
+scikit-learn==1.9.1
+scipy==1.18.1

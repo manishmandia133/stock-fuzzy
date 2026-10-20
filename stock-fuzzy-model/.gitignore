@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+logs/
+figs/
+results.csv
+run_config.json
+run_output.log
+data/processed_GSPC.csv
+.pytest_cache/
+.ruff_cache/

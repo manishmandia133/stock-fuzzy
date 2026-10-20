@@ -8,20 +8,17 @@ Volatility-aware fuzzy learning-rate control for an LSTM predicting
 ```bash
 pip install -r requirements.txt
 python prepare_data.py   # ^GSPC 2015-01-01..2025-12-31 -> data/*.csv
-python main.py           # 5 seeds x 7 variants -> results.csv + figs/
+python main.py           # 5 seeds x 4 variants -> results.csv + figs/
 ```
 
-Active variants (35 runs total):
+Active variants (20 runs total):
 
 1. `fixed_2e-4`
 2. `fixed_5e-4`
-3. `fixed_1e-3`
-4. `fixed_1p5e-3`
-5. `fixed_2e-3`
-6. `fuzzy` — two-input Mamdani LR from (`vol_rank`, validation-loss trend)
-7. `fuzzy_vol_only` — one-input ablation using only `vol_rank`
+3. `fuzzy` — two-input Mamdani LR from (`vol_rank`, validation-loss trend)
+4. `fuzzy_vol_only` — one-input ablation using only `vol_rank`
 
-`BEST_FIXED` is selected from the fixed grid using **validation loss only**
+`BEST_FIXED` is selected from the two fixed LRs using **validation loss only**
 (lowest mean `best_val_loss`); test metrics never influence selection.
 
 `END_DATE = "2025-12-31"` is fixed — report numbers are tied to it
@@ -49,7 +46,7 @@ Active variants (35 runs total):
 - `model.py` — `DirectionLSTM`: 1 layer, 32 units, dropout 0.0, linear +
   sigmoid; defaults read from `config.py`.
 - `train.py` — regime-aware batching (contiguous, batch ORDER shuffled,
-  final partial batch included). Seven variants: five constant LRs, plus
+  final partial batch included). Four variants: two constant LRs, plus
   `fuzzy`/`fuzzy_vol_only`. Fuzzy LR is computed per batch from the batch's
   mean `vol_rank` and the previous epoch's validation-loss trend
   (`trend=0` for epoch 1; updated each epoch). Validates every optimizer
@@ -73,7 +70,7 @@ Active variants (35 runs total):
 
 Fuzzy LR would be more **stable** (especially high-vol loss variance) than
 a fixed baseline without hurting AUC. On the current data the hypothesis is
-not supported: all 35 runs are constant predictors and paired tests show no
+not supported: all 20 runs are constant predictors and paired tests show no
 AUC gain. Null results are reported as null — see NOTES.md and
 REPORT_UPDATES.md.
 
