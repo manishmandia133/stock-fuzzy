@@ -1,18 +1,23 @@
-"""Binary direction LSTM (report: 2 layers, 64 units, dropout 0.2 between layers)."""
-import torch.nn as nn
+"""Binary direction LSTM (1 layer, 32 units, dropout 0.3 before the classifier)."""
+from torch import nn
+
+import config as cfg
 
 
 class DirectionLSTM(nn.Module):
-    def __init__(self, n_features, hidden_size=64, num_layers=2, dropout=0.2):
+    def __init__(self, n_features, hidden_size=cfg.HIDDEN_SIZE,
+                 num_layers=cfg.NUM_LAYERS, dropout=cfg.DROPOUT):
         super().__init__()
-        # dropout>0 with num_layers>1 applies dropout BETWEEN LSTM layers
+        # nn.LSTM dropout is ignored unless num_layers > 1.
+        lstm_dropout = dropout if num_layers > 1 else 0.0
         self.lstm = nn.LSTM(input_size=n_features, hidden_size=hidden_size,
                             num_layers=num_layers, batch_first=True,
-                            dropout=dropout)
+                            dropout=lstm_dropout)
+        self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        out, (h_n, _c_n) = self.lstm(x)
-        last = h_n[-1]  # top-layer final hidden state
+        _out, (h_n, _c_n) = self.lstm(x)
+        last = self.dropout(h_n[-1])  # final hidden state -> dropout -> classifier
         return self.sigmoid(self.fc(last)).squeeze(-1)

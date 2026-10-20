@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-10-19T14:33:06.119988+00:00",
+  "generated_utc": "2026-10-20T13:23:50.034396+00:00",
   "methods": [
     "fixed_1e-3",
     "fuzzy"
@@ -9,7 +9,12 @@
     1,
     2,
     3,
-    4
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
   ],
   "config": {
     "universe": [
@@ -17,11 +22,22 @@
     ],
     "start_date": "2015-01-01",
     "end_date": "2025-12-31",
-    "window": 60,
+    "window": 20,
     "batch_size": 32,
-    "max_epochs": 40,
-    "patience": 6,
+    "max_epochs": 80,
+    "patience": 15,
+    "min_epochs": 10,
     "grad_clip": 1.0,
+    "weight_decay": 0.0001,
+    "hidden_size": 32,
+    "num_layers": 1,
+    "dropout": 0.3,
+    "clip": 3.0,
+    "threshold_grid": [
+      0.4,
+      0.6,
+      0.005
+    ],
     "train_frac": 0.7,
     "val_frac": 0.15,
     "features": [
@@ -29,11 +45,18 @@
       "hl_range",
       "oc_ret",
       "vol_chg",
-      "volatility_14d"
+      "volatility_14d",
+      "vix_level",
+      "vix_z20"
     ],
     "target": "target_direction",
     "fixed_lr": 0.001,
-    "fuzzy_lr_min": 0.0,
-    "fuzzy_lr_max": 0.002
+    "fuzzy_lr_min": 0.0001,
+    "fuzzy_lr_max": 0.003,
+    "fuzzy_centroids": [
+      0.0004,
+      0.0008,
+      0.0016
+    ]
   }
 }

@@ -1,8 +1,7 @@
-"""Multi-seed experiment driver: 5 seeds x 2 methods -> results.csv + stats + plots."""
+"""Multi-seed experiment driver: 10 seeds x 2 methods -> results.csv + stats + plots."""
 import json
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -17,13 +16,14 @@ from train import VARIANTS, train_variant
 
 BASELINE = "fixed_1e-3"
 PROPOSED = "fuzzy"
-COMPARE_METRICS = ["test_auc", "best_val_loss", "highvol_loss_var"]
+COMPARE_METRICS = ["test_auc", "test_mcc", "test_acc", "best_val_loss",
+                   "highvol_loss_var", "epochs_to_best"]
 
 # Report expectations (Sec 6.1): compared against actuals at runtime.
 # Any mismatch is printed plainly — never hidden.
-EXPECTED = {"n_train": 1863, "n_val": 352, "n_test": 353,
-            "up_train": 0.541, "up_val": 0.534, "up_test": 0.578,
-            "checksum": 202000.3771}
+EXPECTED = {"n_train": 1900, "n_val": 391, "n_test": 392,
+            "up_train": 0.5400, "up_val": 0.5269, "up_test": 0.5791,
+            "checksum": -3942.92227483448}
 
 
 def _paired(a, b, name):
@@ -65,7 +65,7 @@ def main(seeds=None, variants=None, make_plots=True):
     print(f"kept tickers: {kept}")
     # T2/T3: the asserts inside data.py (chronological order, label
     # spot-check, n_train>1500, no NaN) raise on failure — reaching here = PASS.
-    print(f"T2: PASS (chronological split asserts + 3-window label spot-check)")
+    print("T2: PASS (chronological split asserts + 3-window label spot-check)")
     print(f"T3: PASS (n_train={len(data['X_train'])} > 1500, no NaN)")
 
     print("=== split stats ===")
@@ -112,22 +112,25 @@ def main(seeds=None, variants=None, make_plots=True):
                 print(f"T6 GATE FAILED: corr(vol,lr)={info['vol_lr_corr']:.3f} >= -0.7.")
                 sys.exit(1)
 
-            m = evaluate_run(model, history, log_df,
-                             data["X_test"], data["y_test"],
-                             data["X_train"][:, -1, :], data["y_train"],
-                             seed=seed)
+            m = evaluate_run(
+                model, history, log_df,
+                data["X_val"], data["y_val"],
+                data["X_test"], data["y_test"],
+                data["X_train"][:, -1, :], data["y_train"],
+                seed=seed)
             if m.get("leakage_flag"):
                 print(f"WARNING: AUC={m['test_auc']:.3f} > 0.60 suspect leakage "
                       f"({variant} s{seed}) — flagged, not dropped.")
             if m.get("const_pred_flag"):
-                print(f"NOTE: {variant} s{seed} is a constant predictor "
+                print(f"NOTE: {variant} s{seed} is a constant predictor at "
+                      f"thr={m['threshold_val']:.3f} "
                       f"(pos_rate={m['pred_pos_rate']:.3f}, "
                       f"pred_std={m['pred_std']:.4f}).")
-            rows.append({"seed": seed, "variant": variant, **info, **m})
             if (isinstance(m.get("test_auc"), float) and
                     abs(history["val_loss"][-1] - np.log(2)) < 0.01):
-                print(f"NOTE: {variant} s{seed} val_loss ~ ln2 "
+                print(f"NOTE: {variant} s{seed} final val_loss ~ ln2 "
                       f"({history['val_loss'][-1]:.4f}); model may not be learning.")
+            rows.append({"seed": seed, "variant": variant, **info, **m})
 
     res = pd.DataFrame(rows)
 
@@ -160,46 +163,61 @@ def main(seeds=None, variants=None, make_plots=True):
     res.to_csv("results.csv", index=False)
     with open("run_config.json", "w", encoding="utf-8") as f:
         json.dump({
-            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "generated_utc": datetime.now(UTC).isoformat(),
             "methods": VARIANTS,
             "seeds": list(seeds),
             "config": {
                 "universe": cfg.UNIVERSE, "start_date": cfg.START_DATE,
                 "end_date": cfg.END_DATE, "window": cfg.WINDOW,
                 "batch_size": cfg.BATCH_SIZE, "max_epochs": cfg.EPOCHS,
-                "patience": cfg.PATIENCE, "grad_clip": cfg.GRAD_CLIP,
+                "patience": cfg.PATIENCE, "min_epochs": cfg.MIN_EPOCHS,
+                "grad_clip": cfg.GRAD_CLIP,
+                "weight_decay": cfg.WEIGHT_DECAY,
+                "hidden_size": cfg.HIDDEN_SIZE, "num_layers": cfg.NUM_LAYERS,
+                "dropout": cfg.DROPOUT, "clip": cfg.CLIP,
+                "threshold_grid": [cfg.THRESHOLD_LOW, cfg.THRESHOLD_HIGH,
+                                   cfg.THRESHOLD_STEP],
                 "train_frac": cfg.TRAIN_FRAC, "val_frac": cfg.VAL_FRAC,
                 "features": cfg.FEATURE_COLS, "target": cfg.TARGET_COL,
                 "fixed_lr": cfg.FIXED_LR, "fuzzy_lr_min": cfg.LR_MIN,
                 "fuzzy_lr_max": cfg.LR_MAX,
+                "fuzzy_centroids": [cfg.LR_SLOW_C, cfg.LR_MED_C,
+                                    cfg.LR_FAST_C],
             },
         }, f, indent=2)
 
     print("=== results: mean ± std per method ===")
-    with pd.option_context("display.width", 200, "display.max_columns", 20):
+    with pd.option_context("display.width", 220, "display.max_columns", 24):
         print(res.groupby("variant")[["test_auc", "test_acc", "test_mcc",
+                                      "test_bal_acc", "threshold_val",
                                       "best_val_loss", "train_val_gap",
-                                      "pred_pos_rate", "pred_std"]].agg(["mean", "std"]).to_string())
+                                      "pred_pos_rate", "pred_std",
+                                      "const_pred_flag"]].agg(["mean", "std"]).to_string())
 
     print("=== test AUC per seed + bootstrap 95% CI ===")
     for _, r in res.iterrows():
         print(f"  {r['variant']} s{int(r['seed'])}: "
               f"AUC={r['test_auc']:.4f} [{r['test_auc_lo']:.4f}, {r['test_auc_hi']:.4f}] "
-              f"pos_rate={r['pred_pos_rate']:.3f} pred_std={r['pred_std']:.4f}")
+              f"thr={r['threshold_val']:.3f} acc={r['test_acc']:.4f} "
+              f"mcc={r['test_mcc']:.4f} pos_rate={r['pred_pos_rate']:.3f} "
+              f"pred_std={r['pred_std']:.4f}")
 
     n_const = int(res["const_pred_flag"].sum())
+    n_const_05 = int(res["const_pred_flag_05"].sum())
     print(f"=== constant-predictor summary: {n_const}/{len(res)} runs "
-          f"predict a single class at 0.5 threshold ===")
+          f"predict a single class at the VAL-selected threshold ===")
+    print(f"    ({n_const_05}/{len(res)} runs are constant at the 0.5 threshold)")
 
     print(f"=== paired tests T8: {PROPOSED} vs {BASELINE} ===")
-    print("  (paired t + Wilcoxon per seed; p-values UNCORRECTED; "
-          "n=5 seeds; Wilcoxon min achievable p=0.0625)")
+    print(f"  (paired t + Wilcoxon per seed; p-values UNCORRECTED; "
+          f"n={len(seeds)} seeds; Wilcoxon min achievable p=0.0020)")
     fz_res = res[res["variant"] == PROPOSED].set_index("seed").sort_index()
     base_res = res[res["variant"] == BASELINE].set_index("seed").sort_index()
+    paired = {}
     print(f"{PROPOSED} vs {BASELINE}:")
     for metric in COMPARE_METRICS:
-        _paired(fz_res[metric].values, base_res[metric].values,
-                f"  {metric}")
+        paired[metric] = _paired(fz_res[metric].values, base_res[metric].values,
+                                 f"  {metric}")
 
     print("=== learning-rate integrity ===")
     for variant in [BASELINE, PROPOSED]:
@@ -229,6 +247,24 @@ def main(seeds=None, variants=None, make_plots=True):
     print("  T6 fuzzy LR bounds/corr  : PASS (in bounds; corr(vol,lr) < -0.7)")
     print(f"  T7 leakage flag          : {'FLAG' if n_leak else 'PASS'}")
     print("  T8 paired stats          : DONE (fuzzy vs fixed_1e-3 only)")
+
+    print("=== FINAL SUMMARY ===")
+    for variant in [BASELINE, PROPOSED]:
+        sub = res[res["variant"] == variant]
+        print(f"  {variant}: AUC {sub['test_auc'].mean():.4f} ± "
+              f"{sub['test_auc'].std():.4f} | MCC {sub['test_mcc'].mean():.4f} | "
+              f"acc {sub['test_acc'].mean():.4f} | "
+              f"const {int(sub['const_pred_flag'].sum())}/{len(sub)}")
+    print(f"  constant predictors: {n_const}/{len(res)} (selected threshold); "
+          f"{n_const_05}/{len(res)} at 0.5")
+    print(f"  majority acc (test): {res['majority_acc'].mean():.4f}")
+    for metric in COMPARE_METRICS:
+        p_t, p_w = paired[metric]
+        print(f"  {metric}: paired-t p={p_t:.4f}, wilcoxon p={p_w:.4f}")
+    print(f"  mean test acc vs majority acc: "
+          f"{res['test_acc'].mean():.4f} vs {res['majority_acc'].mean():.4f}")
+    print("  CLAIM RULE: fuzzy beats fixed only if paired tests support it "
+          "(p<0.05); otherwise report a null.")
 
     if make_plots:
         make_all_plots(data=data)

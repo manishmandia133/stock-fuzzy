@@ -4,12 +4,40 @@ Rules (do NOT change):
   - Chronological split, scaler fit on train only.
   - Label = Close[t+1] > Close[t] for window end t.
 """
+import os
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
 import config as cfg
+
+# ------------------------------------------------------------------ vix
+VIX_CACHE = os.path.join("data", "raw_VIX.csv")
+
+
+def fetch_vix(start=cfg.START_DATE, end=cfg.END_DATE):
+    """Download ^VIX close once, cache it, and return Date/Close frame."""
+    if os.path.exists(VIX_CACHE):
+        return pd.read_csv(VIX_CACHE, parse_dates=["Date"])
+    os.makedirs("data", exist_ok=True)
+    raw = yf.download(cfg.VIX_TICKER, start=start, end=end,
+                      auto_adjust=True, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    out = raw[["Close"]].reset_index().rename(columns={"Close": "vix_level"})
+    out.to_csv(VIX_CACHE, index=False)
+    return out
+
+
+def attach_vix(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach same-day VIX close to an OHLCV frame (no future information)."""
+    vix = fetch_vix().set_index("Date")["vix_level"].sort_index()
+    vix.index = pd.to_datetime(vix.index)
+    out = df.copy()
+    out["vix_level"] = vix.reindex(out.index).ffill()
+    return out
 
 
 # ---------------------------------------------------------------- download
@@ -33,6 +61,7 @@ def batch_download(tickers, start=cfg.START_DATE, end=cfg.END_DATE, chunk_size=2
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(-1)
                 df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(how="all")
+                df = attach_vix(df)
                 if len(df) > (cfg.WINDOW + 30):
                     frames[t] = df
                 else:
@@ -51,11 +80,15 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     out["oc_ret"] = (out["Close"] - out["Open"]) / out["Open"]
     out["vol_chg"] = np.log(out["Volume"].replace(0, np.nan)).diff()
     out["volatility_14d"] = out["return_1d"].rolling(14).std()
+    if "vix_level" in out.columns:
+        vix = out["vix_level"]
+        out["vix_z20"] = (vix - vix.rolling(20).mean()) / vix.rolling(20).std()
     out["target_direction"] = (out["Close"].shift(-1) > out["Close"]).astype(int)
     out = out.replace([np.inf, -np.inf], np.nan)
-    out = out.dropna(
-        subset=["return_1d", "hl_range", "oc_ret", "vol_chg", "volatility_14d"]
-    ).copy()
+    missing = [c for c in cfg.FEATURE_COLS if c not in out.columns]
+    if missing:
+        raise KeyError(f"missing engineered features: {missing}; attach VIX first")
+    out = out.dropna(subset=cfg.FEATURE_COLS).copy()
     out = out.iloc[:-1]  # last row's target undefined (no "tomorrow")
     return out
 
@@ -93,7 +126,7 @@ def split_scale_window(df: pd.DataFrame, window=cfg.WINDOW,
     assert train_df.index.max() < val_df.index.min(), "train/val overlap"
     assert val_df.index.max() < test_df.index.min(), "val/test overlap"
 
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
     scaler.fit(train_df[cfg.FEATURE_COLS].values)
 
     train_vol_sorted = np.sort(train_df[cfg.VOL_COL].values)  # raw vol, train only
@@ -118,7 +151,8 @@ def split_scale_window(df: pd.DataFrame, window=cfg.WINDOW,
                          np.empty((0,), dtype="datetime64[ns]"),
                          np.empty((0,)))
             continue
-        scaled = scaler.transform(part[cfg.FEATURE_COLS].values)
+        scaled = np.clip(scaler.transform(part[cfg.FEATURE_COLS].values),
+                         -cfg.CLIP, cfg.CLIP)
         X, y, ends = make_windows(
             scaled, part[cfg.TARGET_COL].values,
             part.index.values, window)
@@ -140,8 +174,8 @@ def build_dataset(engineered: dict, window=cfg.WINDOW):
         if len(s["train"][0]) == 0 or len(s["test"][0]) == 0:
             continue
         kept.append(t)
-        for name in parts:
-            parts[name].append(s[name])
+        for name, bucket in parts.items():
+            bucket.append(s[name])
     print(f"Tickers contributing usable windows: {len(kept)}")
 
     data = {}

@@ -8,10 +8,11 @@ Methods (only these two are active):
   fixed_1e-3 - constant learning rate of 1e-3 throughout training (baseline)
   fuzzy      - Mamdani fuzzy LR driven by the ACTUAL training batch's mean
                vol_rank (proposed method)
-mean_lr_used (actual mean LR over all optimizer steps) is recorded per run.
-The chosen LR is validated on every optimizer step:
-  - fixed_1e-3 must equal cfg.FIXED_LR exactly (never changes);
-  - fuzzy must stay within [cfg.LR_MIN, cfg.LR_MAX].
+
+Early stopping is on validation AUC (maximised), with a minimum of
+cfg.MIN_EPOCHS epochs and cfg.PATIENCE epochs without improvement. The
+best-AUC weights are restored. mean_lr_used (actual mean LR over all
+optimizer steps) is recorded per run.
 """
 import copy
 import os
@@ -19,7 +20,8 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+from sklearn.metrics import roc_auc_score
+from torch import nn
 
 import config as cfg
 import fuzzy as fz
@@ -67,16 +69,18 @@ def _validate_lrs(variant, lrs_used):
 
 
 def train_variant(X_train, y_train, vr_train, X_val, y_val,
-                  variant, seed, epochs=cfg.EPOCHS,
+                  variant, seed, epochs=None,
                   batch_size=cfg.BATCH_SIZE, logdir="logs"):
     """Train one variant/seed. Returns (model, history, batch_log_df, info)."""
+    epochs = cfg.EPOCHS if epochs is None else epochs
     cfg.set_seed(seed)
     os.makedirs(logdir, exist_ok=True)
     device = cfg.resolve_device()
 
     model = DirectionLSTM(n_features=X_train.shape[2]).to(device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.FIXED_LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.FIXED_LR,
+                                 weight_decay=cfg.WEIGHT_DECAY)
 
     Xt = torch.tensor(X_train, dtype=torch.float32)
     yt = torch.tensor(y_train, dtype=torch.float32)
@@ -92,8 +96,8 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
 
     rows = []
     lrs_used = []  # actual LR applied at every optimizer step (RQ1 fairness)
-    history = {"train_loss": [], "val_loss": [], "val_acc": []}
-    best_loss, best_state, best_epoch, stale = np.inf, None, 0, 0
+    history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_auc": []}
+    best_auc, best_loss, best_state, best_epoch, stale = -np.inf, np.nan, None, 0, 0
 
     for epoch in range(1, epochs + 1):
         order = rng.permutation(len(batches))  # permute batch ORDER only
@@ -124,25 +128,38 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
         with torch.no_grad():
             pv = model(Xv)
             vloss = nn.BCELoss()(pv, yv).item()
+            pv_np = pv.detach().cpu().numpy()
             vacc = (((pv > 0.5).float() == yv).sum().item() / max(len(yv), 1))
+            vauc = float(roc_auc_score(y_val, pv_np)) if len(np.unique(y_val)) > 1 else float("nan")
         history["train_loss"].append(run_loss / max(n_seen, 1))
         history["val_loss"].append(vloss)
         history["val_acc"].append(vacc)
+        history["val_auc"].append(vauc)
 
-        if vloss < best_loss - 1e-9:
-            best_loss, best_state, best_epoch, stale = vloss, copy.deepcopy(model.state_dict()), epoch, 0
+        improved = np.isfinite(vauc) and (vauc > best_auc + 1e-12)
+        if improved:
+            best_auc, best_loss = vauc, vloss
+            best_state = copy.deepcopy(model.state_dict())
+            best_epoch, stale = epoch, 0
         else:
             stale += 1
-            if stale >= cfg.PATIENCE:
-                print(f"[{variant} s{seed}] early stop at epoch {epoch} (best {best_epoch})")
+            if epoch >= cfg.MIN_EPOCHS and stale >= cfg.PATIENCE:
+                print(f"[{variant} s{seed}] early stop at epoch {epoch} "
+                      f"(best AUC {best_auc:.4f} at {best_epoch})")
                 break
 
+    if best_state is None:  # fallback: no finite val AUC ever observed
+        best_epoch = int(np.argmin(history["val_loss"])) + 1
+        best_loss = float(history["val_loss"][best_epoch - 1])
+        best_state = copy.deepcopy(model.state_dict())
     model.load_state_dict(best_state)
+
     log_df = pd.DataFrame(rows)
     log_df.to_csv(os.path.join(logdir, f"{variant}_s{seed}.csv"), index=False)
     pd.DataFrame({"train_loss": history["train_loss"],
                   "val_loss": history["val_loss"],
-                  "val_acc": history["val_acc"]}).to_csv(
+                  "val_acc": history["val_acc"],
+                  "val_auc": history["val_auc"]}).to_csv(
         os.path.join(logdir, f"{variant}_s{seed}_hist.csv"), index=False)
 
     # corr(vol, lr) — NOTE: tautological w.r.t. training benefit; it only
@@ -153,7 +170,8 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
     corr = float(log_df["vol"].corr(log_df["lr"])) if lr_std > 1e-12 else float("nan")
     mean_lr_used = float(np.mean(lrs_used)) if lrs_used else float("nan")
     lr_checks = _validate_lrs(variant, lrs_used)
-    info = {"best_epoch": best_epoch, "best_val_loss": best_loss,
+    info = {"best_epoch": int(best_epoch), "best_val_loss": float(best_loss),
+            "best_val_auc": float(best_auc), "epochs_run": len(history["val_loss"]),
             "batch_vol_std": vol_std, "vol_lr_corr": corr,
             "mean_lr_used": mean_lr_used, "n_steps": len(lrs_used),
             **lr_checks,
@@ -163,11 +181,13 @@ def train_variant(X_train, y_train, vr_train, X_val, y_val,
             "window": int(cfg.WINDOW), "batch_size": int(batch_size),
             "max_epochs": int(epochs), "patience": int(cfg.PATIENCE),
             "grad_clip": float(cfg.GRAD_CLIP),
+            "weight_decay": float(cfg.WEIGHT_DECAY),
             "train_frac": float(cfg.TRAIN_FRAC),
             "val_frac": float(cfg.VAL_FRAC),
             "n_features": int(X_train.shape[2]),
-            "n_train": int(len(X_train)), "n_val": int(len(X_val))}
-    print(f"[{variant} s{seed}] best_epoch={best_epoch} val_loss={best_loss:.4f} "
+            "n_train": len(X_train), "n_val": len(X_val)}
+    print(f"[{variant} s{seed}] best_epoch={best_epoch} "
+          f"val_auc={best_auc:.4f} val_loss={best_loss:.4f} "
           f"vol_std={vol_std:.3f} corr(vol,lr)={corr:.3f} "
           f"mean_lr_used={mean_lr_used:.3e} lr=[{lr_checks['lr_min_used']:.3e}, "
           f"{lr_checks['lr_max_used']:.3e}]")

@@ -1,13 +1,17 @@
 === fuzzy gate (T4, Mamdani FIS) ===
-  max_step: 1.0316287318947728e-05
-  range: 0.0012000000000000001
-  mean: 0.001
+  max_step: 3.098690971719187e-05
+  range: 0.001389246689646019
+  mean: 0.0011334071928840862
+  surface_min: 0.00041075318529144877
+  surface_max: 0.0017999998749374678
+  vol_min: 0.0
+  vol_max: 1.0
   smooth_ok: True
   mean_ok: True
   mono_ok: True
   ruspini_maxdiff: 0.0
   ruspini_ok: True
-  skfuzzy_maxdiff: 3.144186300207963e-17
+  skfuzzy_maxdiff: 0.0
   skfuzzy_ok: True
   pass: True
   NOTE: curve/corr gates are tautological — they verify the controller shape, not training benefit.
@@ -15,121 +19,154 @@
 === data ===
 Downloading 1-1 / 1 ...
 Tickers contributing usable windows: 1
-train: X=(1863, 60, 5) y=(1863,)
-val: X=(352, 60, 5) y=(352,)
-test: X=(353, 60, 5) y=(353,)
-  train: pos_rate=0.541 majority_baseline=0.541
-  val: pos_rate=0.534 majority_baseline=0.534
-  test: pos_rate=0.578 majority_baseline=0.578
+train: X=(1900, 20, 7) y=(1900,)
+val: X=(391, 20, 7) y=(391,)
+test: X=(392, 20, 7) y=(392,)
+  train: pos_rate=0.540 majority_baseline=0.540
+  val: pos_rate=0.527 majority_baseline=0.527
+  test: pos_rate=0.579 majority_baseline=0.579
 kept tickers: ['^GSPC']
 T2: PASS (chronological split asserts + 3-window label spot-check)
-T3: PASS (n_train=1863 > 1500, no NaN)
+T3: PASS (n_train=1900 > 1500, no NaN)
 === split stats ===
-  train: n=1863 up_rate=0.5411 majority=0.5411
-  val: n=352 up_rate=0.5341 majority=0.5341
-  test: n=353 up_rate=0.5779 majority=0.5779
+  train: n=1900 up_rate=0.5400 majority=0.5400
+  val: n=391 up_rate=0.5269 majority=0.5269
+  test: n=392 up_rate=0.5791 majority=0.5791
 === reproducibility check (T1: data build twice) ===
 Tickers contributing usable windows: 1
-train: X=(1863, 60, 5) y=(1863,)
-val: X=(352, 60, 5) y=(352,)
-test: X=(353, 60, 5) y=(353,)
-  train: pos_rate=0.541 majority_baseline=0.541
-  val: pos_rate=0.534 majority_baseline=0.534
-  test: pos_rate=0.578 majority_baseline=0.578
-  T1: PASS (checksum=202000.3771, expected=202000.3771)
+train: X=(1900, 20, 7) y=(1900,)
+val: X=(391, 20, 7) y=(391,)
+test: X=(392, 20, 7) y=(392,)
+  train: pos_rate=0.540 majority_baseline=0.540
+  val: pos_rate=0.527 majority_baseline=0.527
+  test: pos_rate=0.579 majority_baseline=0.579
+  T1: PASS (checksum=-3942.9223, expected=-3942.9223)
 === report expected-vs-actual (Sec 6.1) ===
-  n_train: actual=1863 expected=1863 -> MATCHES REPORT
-  n_val: actual=352 expected=352 -> MATCHES REPORT
-  n_test: actual=353 expected=353 -> MATCHES REPORT
-  up_train: actual=0.5410628019323671 expected=0.541 -> MATCHES REPORT
-  up_val: actual=0.5340909090909091 expected=0.534 -> MATCHES REPORT
-  up_test: actual=0.5779036827195467 expected=0.578 -> MATCHES REPORT
-  checksum: actual=202000.37713316578 expected=202000.3771 -> MATCHES REPORT
-[fixed_1e-3 s0] early stop at epoch 12 (best 6)
-[fixed_1e-3 s0] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
-NOTE: fixed_1e-3 s0 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fixed_1e-3 s0 val_loss ~ ln2 (0.6909); model may not be learning.
-[fuzzy s0] early stop at epoch 12 (best 6)
-[fuzzy s0] best_epoch=6 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
-NOTE: fuzzy s0 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fuzzy s0 val_loss ~ ln2 (0.6909); model may not be learning.
-[fixed_1e-3 s1] early stop at epoch 12 (best 6)
-[fixed_1e-3 s1] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
-NOTE: fixed_1e-3 s1 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fixed_1e-3 s1 val_loss ~ ln2 (0.6910); model may not be learning.
-[fuzzy s1] early stop at epoch 12 (best 6)
-[fuzzy s1] best_epoch=6 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
-NOTE: fuzzy s1 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fuzzy s1 val_loss ~ ln2 (0.6910); model may not be learning.
-[fixed_1e-3 s2] early stop at epoch 10 (best 4)
-[fixed_1e-3 s2] best_epoch=4 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
-NOTE: fixed_1e-3 s2 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fixed_1e-3 s2 val_loss ~ ln2 (0.6910); model may not be learning.
-[fuzzy s2] early stop at epoch 7 (best 1)
-[fuzzy s2] best_epoch=1 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
-NOTE: fuzzy s2 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fuzzy s2 val_loss ~ ln2 (0.6910); model may not be learning.
-[fixed_1e-3 s3] early stop at epoch 13 (best 7)
-[fixed_1e-3 s3] best_epoch=7 val_loss=0.6908 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
-NOTE: fixed_1e-3 s3 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fixed_1e-3 s3 val_loss ~ ln2 (0.6909); model may not be learning.
-[fuzzy s3] early stop at epoch 13 (best 7)
-[fuzzy s3] best_epoch=7 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
-NOTE: fuzzy s3 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fuzzy s3 val_loss ~ ln2 (0.6909); model may not be learning.
-[fixed_1e-3 s4] early stop at epoch 10 (best 4)
-[fixed_1e-3 s4] best_epoch=4 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
-NOTE: fixed_1e-3 s4 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fixed_1e-3 s4 val_loss ~ ln2 (0.6910); model may not be learning.
-[fuzzy s4] early stop at epoch 10 (best 4)
-[fuzzy s4] best_epoch=4 val_loss=0.6909 vol_std=0.251 corr(vol,lr)=-0.996 mean_lr_used=9.991e-04 lr=[4.773e-04, 1.527e-03]
-NOTE: fuzzy s4 is a constant predictor (pos_rate=1.000, pred_std=0.0001).
-NOTE: fuzzy s4 val_loss ~ ln2 (0.6910); model may not be learning.
+  n_train: actual=1900 expected=1900 -> MATCHES REPORT
+  n_val: actual=391 expected=391 -> MATCHES REPORT
+  n_test: actual=392 expected=392 -> MATCHES REPORT
+  up_train: actual=0.54 expected=0.54 -> MATCHES REPORT
+  up_val: actual=0.5268542199488491 expected=0.5269 -> MATCHES REPORT
+  up_test: actual=0.5790816326530612 expected=0.5791 -> MATCHES REPORT
+  checksum: actual=-3942.92227483448 expected=-3942.92227483448 -> MATCHES REPORT
+[fixed_1e-3 s0] early stop at epoch 16 (best AUC 0.5287 at 1)
+[fixed_1e-3 s0] best_epoch=1 val_auc=0.5287 val_loss=0.6919 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s0 final val_loss ~ ln2 (0.6907); model may not be learning.
+[fuzzy s0] early stop at epoch 16 (best AUC 0.5273 at 1)
+[fuzzy s0] best_epoch=1 val_auc=0.5273 val_loss=0.6918 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+NOTE: fuzzy s0 final val_loss ~ ln2 (0.6904); model may not be learning.
+[fixed_1e-3 s1] early stop at epoch 57 (best AUC 0.5545 at 42)
+[fixed_1e-3 s1] best_epoch=42 val_auc=0.5545 val_loss=0.6914 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s1] early stop at epoch 57 (best AUC 0.5556 at 42)
+[fuzzy s1] best_epoch=42 val_auc=0.5556 val_loss=0.6932 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s2] early stop at epoch 58 (best AUC 0.5683 at 43)
+[fixed_1e-3 s2] best_epoch=43 val_auc=0.5683 val_loss=0.6901 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s2] early stop at epoch 50 (best AUC 0.5600 at 35)
+[fuzzy s2] best_epoch=35 val_auc=0.5600 val_loss=0.6882 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s3] early stop at epoch 18 (best AUC 0.5273 at 3)
+[fixed_1e-3 s3] best_epoch=3 val_auc=0.5273 val_loss=0.6909 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s3 final val_loss ~ ln2 (0.6902); model may not be learning.
+[fuzzy s3] early stop at epoch 18 (best AUC 0.5274 at 3)
+[fuzzy s3] best_epoch=3 val_auc=0.5274 val_loss=0.6909 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+NOTE: fuzzy s3 final val_loss ~ ln2 (0.6902); model may not be learning.
+[fixed_1e-3 s4] early stop at epoch 72 (best AUC 0.5680 at 57)
+[fixed_1e-3 s4] best_epoch=57 val_auc=0.5680 val_loss=0.6986 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s4] early stop at epoch 80 (best AUC 0.5747 at 65)
+[fuzzy s4] best_epoch=65 val_auc=0.5747 val_loss=0.7304 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s5] early stop at epoch 42 (best AUC 0.5409 at 27)
+[fixed_1e-3 s5] best_epoch=27 val_auc=0.5409 val_loss=0.6877 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s5] early stop at epoch 50 (best AUC 0.5490 at 35)
+[fuzzy s5] best_epoch=35 val_auc=0.5490 val_loss=0.6934 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s6] early stop at epoch 48 (best AUC 0.5531 at 33)
+[fixed_1e-3 s6] best_epoch=33 val_auc=0.5531 val_loss=0.6856 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s6] early stop at epoch 45 (best AUC 0.5533 at 30)
+[fuzzy s6] best_epoch=30 val_auc=0.5533 val_loss=0.6877 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s7] early stop at epoch 58 (best AUC 0.5520 at 43)
+[fixed_1e-3 s7] best_epoch=43 val_auc=0.5520 val_loss=0.6888 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s7] early stop at epoch 55 (best AUC 0.5565 at 40)
+[fuzzy s7] best_epoch=40 val_auc=0.5565 val_loss=0.6886 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s8] early stop at epoch 57 (best AUC 0.5485 at 42)
+[fixed_1e-3 s8] best_epoch=42 val_auc=0.5485 val_loss=0.6932 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+[fuzzy s8] early stop at epoch 51 (best AUC 0.5550 at 36)
+[fuzzy s8] best_epoch=36 val_auc=0.5550 val_loss=0.6906 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+[fixed_1e-3 s9] early stop at epoch 16 (best AUC 0.5199 at 1)
+[fixed_1e-3 s9] best_epoch=1 val_auc=0.5199 val_loss=0.6914 vol_std=0.248 corr(vol,lr)=nan mean_lr_used=1.000e-03 lr=[1.000e-03, 1.000e-03]
+NOTE: fixed_1e-3 s9 final val_loss ~ ln2 (0.6908); model may not be learning.
+[fuzzy s9] early stop at epoch 16 (best AUC 0.5212 at 1)
+[fuzzy s9] best_epoch=1 val_auc=0.5212 val_loss=0.6914 vol_std=0.248 corr(vol,lr)=-0.978 mean_lr_used=1.134e-03 lr=[5.042e-04, 1.758e-03]
+NOTE: fuzzy s9 final val_loss ~ ln2 (0.6908); model may not be learning.
 === results: mean ± std per method ===
-            test_auc            test_acc      test_mcc      best_val_loss           train_val_gap           pred_pos_rate       pred_std          
-                mean       std      mean  std     mean  std          mean       std          mean       std          mean  std      mean       std
-variant                                                                                                                                           
-fixed_1e-3  0.510442  0.032433  0.577904  0.0      0.0  0.0      0.690843  0.000033      0.000570  0.000285           1.0  0.0  0.000103  0.000022
-fuzzy       0.506185  0.034086  0.577904  0.0      0.0  0.0      0.690850  0.000038      0.000435  0.000535           1.0  0.0  0.000112  0.000030
+            test_auc            test_acc            test_mcc           test_bal_acc           threshold_val           best_val_loss           train_val_gap           pred_pos_rate            pred_std           const_pred_flag     
+                mean       std      mean       std      mean       std         mean       std          mean       std          mean       std          mean       std          mean       std      mean       std            mean  std
+variant                                                                                                                                                                                                                               
+fixed_1e-3  0.492958  0.009861  0.484184  0.020787  0.000491  0.028573     0.500083  0.013877        0.5390  0.022336      0.690972  0.003477      0.021198  0.020766      0.399490  0.103268  0.065716  0.043383             0.0  0.0
+fuzzy       0.494100  0.012287  0.500000  0.020794 -0.031385  0.049518     0.486675  0.021529        0.5195  0.033371      0.694628  0.012723      0.029719  0.041555      0.582143  0.196661  0.075649  0.058844             0.0  0.0
 === test AUC per seed + bootstrap 95% CI ===
-  fixed_1e-3 s0: AUC=0.5231 [0.4616, 0.5860] pos_rate=1.000 pred_std=0.0001
-  fuzzy s0: AUC=0.5198 [0.4584, 0.5842] pos_rate=1.000 pred_std=0.0001
-  fixed_1e-3 s1: AUC=0.5244 [0.4675, 0.5829] pos_rate=1.000 pred_std=0.0001
-  fuzzy s1: AUC=0.5151 [0.4564, 0.5742] pos_rate=1.000 pred_std=0.0001
-  fixed_1e-3 s2: AUC=0.5069 [0.4466, 0.5659] pos_rate=1.000 pred_std=0.0001
-  fuzzy s2: AUC=0.4999 [0.4403, 0.5605] pos_rate=1.000 pred_std=0.0001
-  fixed_1e-3 s3: AUC=0.4567 [0.3941, 0.5185] pos_rate=1.000 pred_std=0.0001
-  fuzzy s3: AUC=0.4522 [0.3902, 0.5132] pos_rate=1.000 pred_std=0.0001
-  fixed_1e-3 s4: AUC=0.5412 [0.4784, 0.6014] pos_rate=1.000 pred_std=0.0001
-  fuzzy s4: AUC=0.5439 [0.4822, 0.6049] pos_rate=1.000 pred_std=0.0001
-=== constant-predictor summary: 10/10 runs predict a single class at 0.5 threshold ===
+  fixed_1e-3 s0: AUC=0.4898 [0.4322, 0.5472] thr=0.515 acc=0.4796 mcc=-0.0113 pos_rate=0.406 pred_std=0.0096
+  fuzzy s0: AUC=0.4890 [0.4320, 0.5472] thr=0.515 acc=0.4796 mcc=-0.0422 pos_rate=0.503 pred_std=0.0099
+  fixed_1e-3 s1: AUC=0.4893 [0.4317, 0.5516] thr=0.550 acc=0.4643 mcc=-0.0237 pos_rate=0.344 pred_std=0.0879
+  fuzzy s1: AUC=0.4919 [0.4339, 0.5508] thr=0.565 acc=0.4745 mcc=0.0068 pos_rate=0.319 pred_std=0.0971
+  fixed_1e-3 s2: AUC=0.5012 [0.4448, 0.5555] thr=0.535 acc=0.5204 mcc=0.0389 pos_rate=0.508 pred_std=0.1015
+  fuzzy s2: AUC=0.4998 [0.4428, 0.5551] thr=0.455 acc=0.5408 mcc=-0.0381 pos_rate=0.844 pred_std=0.0804
+  fixed_1e-3 s3: AUC=0.4852 [0.4268, 0.5419] thr=0.535 acc=0.4949 mcc=-0.0013 pos_rate=0.472 pred_std=0.0140
+  fuzzy s3: AUC=0.4841 [0.4271, 0.5399] thr=0.525 acc=0.5026 mcc=-0.1208 pos_rate=0.811 pred_std=0.0147
+  fixed_1e-3 s4: AUC=0.5075 [0.4528, 0.5677] thr=0.505 acc=0.5051 mcc=0.0079 pos_rate=0.508 pred_std=0.1409
+  fuzzy s4: AUC=0.5164 [0.4607, 0.5755] thr=0.510 acc=0.5153 mcc=0.0188 pos_rate=0.538 pred_std=0.2080
+  fixed_1e-3 s5: AUC=0.4963 [0.4396, 0.5549] thr=0.535 acc=0.4770 mcc=-0.0335 pos_rate=0.459 pred_std=0.0563
+  fuzzy s5: AUC=0.4933 [0.4367, 0.5498] thr=0.490 acc=0.5026 mcc=-0.0557 pos_rate=0.679 pred_std=0.1069
+  fixed_1e-3 s6: AUC=0.4910 [0.4344, 0.5504] thr=0.585 acc=0.4515 mcc=-0.0042 pos_rate=0.204 pred_std=0.0775
+  fuzzy s6: AUC=0.4911 [0.4318, 0.5496] thr=0.500 acc=0.5153 mcc=-0.0309 pos_rate=0.686 pred_std=0.0736
+  fixed_1e-3 s7: AUC=0.4954 [0.4347, 0.5530] thr=0.535 acc=0.5000 mcc=0.0257 pos_rate=0.421 pred_std=0.0721
+  fuzzy s7: AUC=0.5024 [0.4414, 0.5614] thr=0.545 acc=0.5000 mcc=0.0274 pos_rate=0.416 pred_std=0.0719
+  fixed_1e-3 s8: AUC=0.5014 [0.4440, 0.5575] thr=0.560 acc=0.4796 mcc=0.0437 pos_rate=0.253 pred_std=0.0865
+  fuzzy s8: AUC=0.5025 [0.4455, 0.5576] thr=0.560 acc=0.4745 mcc=0.0141 pos_rate=0.298 pred_std=0.0823
+  fixed_1e-3 s9: AUC=0.4725 [0.4141, 0.5314] thr=0.535 acc=0.4694 mcc=-0.0371 pos_rate=0.421 pred_std=0.0110
+  fuzzy s9: AUC=0.4706 [0.4115, 0.5304] thr=0.530 acc=0.4949 mcc=-0.0932 pos_rate=0.727 pred_std=0.0117
+=== constant-predictor summary: 0/20 runs predict a single class at the VAL-selected threshold ===
+    (0/20 runs are constant at the 0.5 threshold)
 === paired tests T8: fuzzy vs fixed_1e-3 ===
-  (paired t + Wilcoxon per seed; p-values UNCORRECTED; n=5 seeds; Wilcoxon min achievable p=0.0625)
+  (paired t + Wilcoxon per seed; p-values UNCORRECTED; n=10 seeds; Wilcoxon min achievable p=0.0020)
 fuzzy vs fixed_1e-3:
-    test_auc: paired-t p=0.1038 | wilcoxon p=0.1250
-    best_val_loss: paired-t p=0.2455 | wilcoxon p=0.1875
-    highvol_loss_var: paired-t p=0.0084 | wilcoxon p=0.0625
+    test_auc: paired-t p=0.3804 | wilcoxon p=0.8457
+    test_mcc: paired-t p=0.0469 | wilcoxon p=0.0645
+    test_acc: paired-t p=0.0334 | wilcoxon p=0.0156
+    best_val_loss: paired-t p=0.2844 | wilcoxon p=0.6953
+    highvol_loss_var: paired-t p=0.3131 | wilcoxon p=0.4316
+    epochs_to_best: paired-t p=0.8137 | wilcoxon p=1.0000
 === learning-rate integrity ===
   fixed_1e-3: lr_used range=[1.000e-03, 1.000e-03] mean=1.000e-03 std=0.000e+00
-  fuzzy: lr_used range=[4.773e-04, 1.527e-03] mean=9.991e-04 std=2.934e-04
+  fuzzy: lr_used range=[5.042e-04, 1.758e-03] mean=1.134e-03 std=3.812e-04
   fixed_1e-3: PASS (exactly 0.001 at every step)
-  fuzzy: PASS (inside [0, 0.002], corr(vol,lr)<-0.7)
+  fuzzy: PASS (inside [0.0001, 0.003], corr(vol,lr)<-0.7)
 === mean_lr_used per method ===
-           mean_lr_used                         
-                   mean  std       min       max
-variant                                         
-fixed_1e-3     0.001000  0.0  0.001000  0.001000
-fuzzy          0.000999  0.0  0.000999  0.000999
+           mean_lr_used                                  
+                   mean           std       min       max
+variant                                                  
+fixed_1e-3     0.001000  2.285699e-19  0.001000  0.001000
+fuzzy          0.001134  7.228014e-20  0.001134  0.001134
 T7: PASS (no test AUC > 0.60)
 T8: DONE (paired stats above; do not claim fuzzy wins unless tests support it)
 === GATE SUMMARY T1..T8 ===
   T1 data reproducibility : PASS
   T2 split/label checks    : PASS (asserts in data.py)
-  T3 scope windows/NaN     : PASS (n_train=1863)
+  T3 scope windows/NaN     : PASS (n_train=1900)
   T4 fuzzy curve           : PASS (tautological: shape only)
   T5 regime batching       : PASS (all batch_vol_std > 0.15)
   T6 fuzzy LR bounds/corr  : PASS (in bounds; corr(vol,lr) < -0.7)
   T7 leakage flag          : PASS
   T8 paired stats          : DONE (fuzzy vs fixed_1e-3 only)
+=== FINAL SUMMARY ===
+  fixed_1e-3: AUC 0.4930 ± 0.0099 | MCC 0.0005 | acc 0.4842 | const 0/10
+  fuzzy: AUC 0.4941 ± 0.0123 | MCC -0.0314 | acc 0.5000 | const 0/10
+  constant predictors: 0/20 (selected threshold); 0/20 at 0.5
+  majority acc (test): 0.5791
+  test_auc: paired-t p=0.3804, wilcoxon p=0.8457
+  test_mcc: paired-t p=0.0469, wilcoxon p=0.0645
+  test_acc: paired-t p=0.0334, wilcoxon p=0.0156
+  best_val_loss: paired-t p=0.2844, wilcoxon p=0.6953
+  highvol_loss_var: paired-t p=0.3131, wilcoxon p=0.4316
+  epochs_to_best: paired-t p=0.8137, wilcoxon p=1.0000
+  mean test acc vs majority acc: 0.4921 vs 0.5791
+  CLAIM RULE: fuzzy beats fixed only if paired tests support it (p<0.05); otherwise report a null.
 Figures saved to figs/
 Done. results.csv written.

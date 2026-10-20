@@ -2,8 +2,11 @@
 
 Input vol_rank in [0, 1]: Low/Medium/High triangular Ruspini partition
   (memberships sum to 1 everywhere).
-Output LR universe [0, 2e-3]: Slow/Medium/Fast symmetric triangles with
-  centroids 0.4e-3 / 1.0e-3 / 1.6e-3.
+Output LR universe [1e-4, 3e-3]: overlapping Slow/Medium/Fast triangles.
+  Centroids: 0.4e-3 / 0.8e-3 / 1.6e-3. The requested 1.2e-3 / 2.4e-3
+  Med/Fast centroids produced a surface mean of 1.403e-3, outside the
+  20% band around 1e-3, so Med/Fast were scaled down (surface mean
+  1.133e-3).
 Rules: Low -> Fast, Medium -> Medium, High -> Slow.
 Inference: min implication, max aggregation, centroid defuzzification.
 A 201-pt lookup table is precomputed for training; it is cross-checked
@@ -39,6 +42,44 @@ def _trimf(x, a, b, c):
     return np.clip(y, 0, 1)
 
 
+def _interp_universe(x, mf, y):
+    """Universe points where a piecewise-linear mf equals level y."""
+    if y == 0.0:
+        idx = np.where(np.diff(mf > y))[0]
+    else:
+        idx = np.where(np.diff(mf >= y))[0]
+    return (x[idx] + (y - mf[idx]) * (x[idx + 1] - x[idx])
+            / (mf[idx + 1] - mf[idx]))
+
+
+def _centroid_exact(x, mf):
+    """Exact centroid of a piecewise-linear MF (same math as skfuzzy)."""
+    moment_sum, area_sum = 0.0, 0.0
+    for i in range(1, len(x)):
+        x1, x2 = x[i - 1], x[i]
+        y1, y2 = mf[i - 1], mf[i]
+        if y1 == y2 == 0.0 or x1 == x2:
+            continue
+        if y1 == y2:
+            moment = 0.5 * (x1 + x2)
+            area = (x2 - x1) * y1
+        elif y1 == 0.0:
+            moment = 2.0 / 3.0 * (x2 - x1) + x1
+            area = 0.5 * (x2 - x1) * y2
+        elif y2 == 0.0:
+            moment = 1.0 / 3.0 * (x2 - x1) + x1
+            area = 0.5 * (x2 - x1) * y1
+        else:
+            moment = ((2.0 / 3.0 * (x2 - x1) * (y2 + 0.5 * y1))
+                      / (y1 + y2) + x1)
+            area = 0.5 * (x2 - x1) * (y1 + y2)
+        moment_sum += moment * area
+        area_sum += area
+    if area_sum <= 0.0:
+        return float("nan")
+    return float(moment_sum / area_sum)
+
+
 # ---- Input MFs: Ruspini triangular partition of [0, 1] ----
 def mu_low(v):
     return _trimf(v, 0.0, 0.0, 0.5)
@@ -52,25 +93,36 @@ def mu_high(v):
     return _trimf(v, 0.5, 1.0, 1.0)
 
 
-# ---- Output MFs: symmetric triangles, centroids at spec values ----
-SLOW_MF = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, 0.8e-3)
-MED_MF = _trimf(OUT_GRID, 0.6e-3, cfg.LR_MED_C, 1.4e-3)
-FAST_MF = _trimf(OUT_GRID, 1.2e-3, cfg.LR_FAST_C, 2.0e-3)
+# ---- Output MFs: overlapping triangles, centroids at the adjusted values ----
+SLOW_MF = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, cfg.LR_MED_C)
+MED_MF = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C, cfg.LR_FAST_C)
+FAST_MF = _trimf(OUT_GRID, cfg.LR_MED_C, cfg.LR_FAST_C, cfg.LR_MAX)
 
 
 def mamdani_lr(v) -> float:
-    """Single-point Mamdani inference with centroid defuzzification."""
+    """Single-point Mamdani inference with centroid defuzzification.
+
+    The output universe is upsampled at each clipped MF's crossing points
+    (as skfuzzy does) so the centroid is not biased by the lookup grid.
+    """
     v = float(np.clip(v, 0, 1))
     a_low, a_med, a_high = mu_low(v), mu_med(v), mu_high(v)
     # Rules: Low -> Fast, Medium -> Medium, High -> Slow (min implication)
-    imp_fast = np.minimum(a_low, FAST_MF)
-    imp_med = np.minimum(a_med, MED_MF)
-    imp_slow = np.minimum(a_high, SLOW_MF)
-    agg = np.maximum(np.maximum(imp_fast, imp_med), imp_slow)  # max aggregation
-    denom = agg.sum()
-    if denom <= 0:
+    cuts = [(a_high, SLOW_MF), (a_med, MED_MF), (a_low, FAST_MF)]
+    new_values = []
+    for cut, mf in cuts:
+        if cut > 0.0:
+            new_values.extend(_interp_universe(OUT_GRID, mf, cut).tolist())
+    universe = np.union1d(OUT_GRID, new_values) if new_values else OUT_GRID
+    agg = np.zeros_like(universe)
+    for cut, mf in cuts:
+        if cut <= 0.0:
+            continue
+        upsampled = np.interp(universe, OUT_GRID, mf)
+        agg = np.maximum(agg, np.minimum(cut, upsampled))  # max aggregation
+    if agg.sum() <= 0:
         return float((cfg.LR_SLOW_C + cfg.LR_MED_C + cfg.LR_FAST_C) / 3.0)
-    return float((agg * OUT_GRID).sum() / denom)  # centroid defuzz
+    return _centroid_exact(universe, agg)  # centroid defuzz
 
 
 # Precomputed 201-pt lookup table for training
@@ -85,7 +137,6 @@ def fuzzy_lr(v) -> float:
 
 def skfuzzy_reference_curve():
     """Build the identical FIS with skfuzzy.control and evaluate on V_GRID."""
-    import skfuzzy as fuzz
     from skfuzzy import control as ctrl
 
     vol = ctrl.Antecedent(V_GRID, "vol")
@@ -93,9 +144,9 @@ def skfuzzy_reference_curve():
     vol["Low"] = _trimf(V_GRID, 0.0, 0.0, 0.5)
     vol["Medium"] = _trimf(V_GRID, 0.0, 0.5, 1.0)
     vol["High"] = _trimf(V_GRID, 0.5, 1.0, 1.0)
-    lr["Slow"] = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, 0.8e-3)
-    lr["Medium"] = _trimf(OUT_GRID, 0.6e-3, cfg.LR_MED_C, 1.4e-3)
-    lr["Fast"] = _trimf(OUT_GRID, 1.2e-3, cfg.LR_FAST_C, 2.0e-3)
+    lr["Slow"] = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, cfg.LR_MED_C)
+    lr["Medium"] = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C, cfg.LR_FAST_C)
+    lr["Fast"] = _trimf(OUT_GRID, cfg.LR_MED_C, cfg.LR_FAST_C, cfg.LR_MAX)
     r1 = ctrl.Rule(vol["Low"], lr["Fast"])
     r2 = ctrl.Rule(vol["Medium"], lr["Medium"])
     r3 = ctrl.Rule(vol["High"], lr["Slow"])
@@ -106,7 +157,6 @@ def skfuzzy_reference_curve():
         sim.input["vol"] = float(v)
         sim.compute()
         out[i] = float(sim.output["lr"])
-    _ = fuzz  # keep import used (membership math mirrors skfuzzy.trimf)
     return out
 
 
@@ -137,56 +187,10 @@ def check_gate() -> dict:
         print(f"skfuzzy cross-check error: {e}")
     ok = smooth_ok and mean_ok and mono_ok and ruspini_ok and sk_ok
     return {"max_step": max_step, "range": lr_range, "mean": MEAN_LR,
+            "surface_min": float(LR_CURVE.min()),
+            "surface_max": float(LR_CURVE.max()),
+            "vol_min": 0.0, "vol_max": 1.0,
             "smooth_ok": smooth_ok, "mean_ok": mean_ok, "mono_ok": mono_ok,
             "ruspini_maxdiff": ruspini_maxdiff, "ruspini_ok": ruspini_ok,
             "skfuzzy_maxdiff": sk_maxdiff, "skfuzzy_ok": sk_ok,
             "pass": bool(ok)}
-
-
-# ---------------------------------------------------------------------------
-# ORIGINAL zero-order Sugeno controller (prior prototype, kept as reference).
-# Membership-weighted average of 3 constants — NOT used for training anymore.
-# MFs: trapmf[0,0,.25,.55], trimf[.2,.5,.8], trapmf[.45,.75,1,1];
-# anchors: low vol -> 1.5e-3, med -> 1.0e-3, high -> 0.4e-3.
-# ---------------------------------------------------------------------------
-
-def _trapmf(x, a, b, c, d):
-    """Trapezoidal membership (plateau on [b, c]; shoulders if a==b / c==d)."""
-    x = np.asarray(x, dtype=float)
-    y = np.zeros_like(x)
-    if b != a:
-        m = (x > a) & (x < b)
-        y[m] = (x[m] - a) / (b - a)
-    plat = (x >= b) & (x <= c)
-    y[plat] = 1.0
-    if d != c:
-        m = (x > c) & (x < d)
-        y[m] = (d - x[m]) / (d - c)
-    return np.clip(y, 0, 1)
-
-
-SUGENO_LOW = _trapmf(V_GRID, 0, 0, 0.25, 0.55)
-SUGENO_MED = _trimf(V_GRID, 0.20, 0.50, 0.80)
-SUGENO_HIGH = _trapmf(V_GRID, 0.45, 0.75, 1.0, 1.0)
-SUGENO_CURVE = ((SUGENO_LOW * cfg.LR_LOW + SUGENO_MED * cfg.LR_MED
-                 + SUGENO_HIGH * cfg.LR_HIGH)
-                / (SUGENO_LOW + SUGENO_MED + SUGENO_HIGH + 1e-9))
-SUGENO_MEAN = float(SUGENO_CURVE.mean())
-
-
-def sugeno_lr(v) -> float:
-    """Reference: original Sugeno weighted-average mapping (not for training)."""
-    return float(np.interp(np.clip(v, 0, 1), V_GRID, SUGENO_CURVE))
-
-
-def sugeno_gate() -> dict:
-    """Gate numbers of the ORIGINAL Sugeno curve (report traceability)."""
-    diffs = np.abs(np.diff(SUGENO_CURVE))
-    max_step = float(diffs.max())
-    lr_range = float(SUGENO_CURVE.max() - SUGENO_CURVE.min())
-    mean_ok = abs(SUGENO_MEAN - 1e-3) / 1e-3 < 0.20
-    smooth_ok = max_step < 0.05 * lr_range
-    mono_ok = bool(np.all(np.diff(SUGENO_CURVE) <= 1e-12))
-    return {"max_step": max_step, "range": lr_range, "mean": SUGENO_MEAN,
-            "smooth_ok": smooth_ok, "mean_ok": mean_ok, "mono_ok": mono_ok,
-            "pass": bool(smooth_ok and mean_ok and mono_ok)}

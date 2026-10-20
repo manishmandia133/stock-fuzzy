@@ -4,7 +4,7 @@ import random
 import numpy as np
 
 # ---- Reproducibility ----
-SEEDS = [0, 1, 2, 3, 4]
+SEEDS = list(range(10))
 
 
 def set_seed(s: int) -> None:
@@ -47,36 +47,49 @@ EXTENSION = False
 
 START_DATE = "2015-01-01"
 END_DATE = "2025-12-31"  # fixed: report numbers are tied to this end date (yfinance end is exclusive)
+VIX_TICKER = "^VIX"
 
-WINDOW = 60
+WINDOW = 20
 BATCH_SIZE = 32
-EPOCHS = 40
-PATIENCE = 6
+EPOCHS = 80
+PATIENCE = 15
+MIN_EPOCHS = 10
 GRAD_CLIP = 1.0
+WEIGHT_DECAY = 1e-4
+
+# Standardised features are clipped to [-CLIP, CLIP] after train-only fit.
+CLIP = 3.0
+
+# ---- Model ----
+HIDDEN_SIZE = 32
+NUM_LAYERS = 1
+DROPOUT = 0.3
+
+# ---- Validation threshold selection (no test tuning) ----
+THRESHOLD_LOW = 0.40
+THRESHOLD_HIGH = 0.60
+THRESHOLD_STEP = 0.005
 
 # Chronological split fractions (70/15/15)
 TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 
-# ---- Features (stationary only, no raw OHLC) ----
-FEATURE_COLS = ["return_1d", "hl_range", "oc_ret", "vol_chg", "volatility_14d"]
+# ---- Features (stationary + VIX; no raw OHLC) ----
+FEATURE_COLS = ["return_1d", "hl_range", "oc_ret", "vol_chg", "volatility_14d",
+                "vix_level", "vix_z20"]
 TARGET_COL = "target_direction"
 VOL_COL = "volatility_14d"
-VOL_COL_IDX = FEATURE_COLS.index(VOL_COL)
 
 # ---- Active learning-rate methods ----
 # fixed_1e-3: constant baseline (never changes).
 # fuzzy: Mamdani controller below (low vol -> higher LR, high vol -> lower LR).
 FIXED_LR = 1e-3
 
-# ---- Prior Sugeno prototype anchors (reference only; not trained) ----
-LR_LOW = 1.5e-3
-LR_MED = 1.0e-3
-LR_HIGH = 0.4e-3
-
 # ---- Output LR universe (Mamdani consequent) ----
-LR_MIN = 0.0
-LR_MAX = 2e-3
+LR_MIN = 1e-4
+LR_MAX = 3e-3
 LR_SLOW_C = 0.4e-3
-LR_MED_C = 1.0e-3
+# Requested Med/Fast centroids 1.2e-3/2.4e-3 put the surface mean at
+# 1.403e-3 (>20% above 1e-3). These values keep the mean at 1.133e-3.
+LR_MED_C = 0.8e-3
 LR_FAST_C = 1.6e-3

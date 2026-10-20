@@ -33,9 +33,9 @@ def plot_01_membership_functions():
     ax[0].set_ylabel("membership")
     ax[0].legend()
     u = fz.OUT_GRID * 1e3
-    ax[1].plot(u, fz.SLOW_MF, label="Slow (c=0.4e-3)")
-    ax[1].plot(u, fz.MED_MF, label="Medium (c=1.0e-3)")
-    ax[1].plot(u, fz.FAST_MF, label="Fast (c=1.6e-3)")
+    ax[1].plot(u, fz.SLOW_MF, label=f"Slow (c={cfg.LR_SLOW_C*1e3:.1f}e-3)")
+    ax[1].plot(u, fz.MED_MF, label=f"Medium (c={cfg.LR_MED_C*1e3:.1f}e-3)")
+    ax[1].plot(u, fz.FAST_MF, label=f"Fast (c={cfg.LR_FAST_C*1e3:.1f}e-3)")
     ax[1].set_title("Output MFs: learning rate")
     ax[1].set_xlabel("LR (1e-3)")
     ax[1].legend()
@@ -146,7 +146,7 @@ def plot_07_auc_boxplot(results_csv="results.csv"):
     except TypeError:
         ax.boxplot(data, labels=variants)  # matplotlib < 3.9 fallback
     ax.set_ylabel("test AUC")
-    ax.set_title("AUC per method (5 seeds each)")
+    ax.set_title(f"AUC per method ({df['seed'].nunique()} seeds each)")
     plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
     fig.tight_layout()
     _save(fig, "07_auc_boxplot.png")
