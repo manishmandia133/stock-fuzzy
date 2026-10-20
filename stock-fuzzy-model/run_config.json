@@ -1,8 +1,13 @@
 {
-  "generated_utc": "2026-10-19T14:33:06.119988+00:00",
-  "methods": [
+  "generated_utc": "2026-10-20T06:20:00.368504+00:00",
+  "variants": [
+    "fixed_2e-4",
+    "fixed_5e-4",
     "fixed_1e-3",
-    "fuzzy"
+    "fixed_1p5e-3",
+    "fixed_2e-3",
+    "fuzzy",
+    "fuzzy_vol_only"
   ],
   "seeds": [
     0,
@@ -11,13 +16,18 @@
     3,
     4
   ],
+  "best_fixed_rule": "lowest mean best_val_loss across seeds; validation only, never test",
+  "best_fixed": "fixed_2e-4",
   "config": {
     "universe": [
       "^GSPC"
     ],
     "start_date": "2015-01-01",
     "end_date": "2025-12-31",
-    "window": 60,
+    "window": 30,
+    "hidden": 32,
+    "num_layers": 1,
+    "dropout": 0.0,
     "batch_size": 32,
     "max_epochs": 40,
     "patience": 6,
@@ -32,8 +42,26 @@
       "volatility_14d"
     ],
     "target": "target_direction",
-    "fixed_lr": 0.001,
+    "fixed_lr_grid": [
+      0.0002,
+      0.0005,
+      0.001,
+      0.0015,
+      0.002
+    ],
+    "fixed_lr_variants": {
+      "fixed_2e-4": 0.0002,
+      "fixed_5e-4": 0.0005,
+      "fixed_1e-3": 0.001,
+      "fixed_1p5e-3": 0.0015,
+      "fixed_2e-3": 0.002
+    },
     "fuzzy_lr_min": 0.0,
-    "fuzzy_lr_max": 0.002
+    "fuzzy_lr_max": 0.002,
+    "trend_scale": 0.005,
+    "trend_clip": [
+      -1.0,
+      1.0
+    ]
   }
 }

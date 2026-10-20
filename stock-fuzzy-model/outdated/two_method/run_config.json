@@ -1,0 +1,39 @@
+{
+  "generated_utc": "2026-10-19T14:33:06.119988+00:00",
+  "methods": [
+    "fixed_1e-3",
+    "fuzzy"
+  ],
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "config": {
+    "universe": [
+      "^GSPC"
+    ],
+    "start_date": "2015-01-01",
+    "end_date": "2025-12-31",
+    "window": 60,
+    "batch_size": 32,
+    "max_epochs": 40,
+    "patience": 6,
+    "grad_clip": 1.0,
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "features": [
+      "return_1d",
+      "hl_range",
+      "oc_ret",
+      "vol_chg",
+      "volatility_14d"
+    ],
+    "target": "target_direction",
+    "fixed_lr": 0.001,
+    "fuzzy_lr_min": 0.0,
+    "fuzzy_lr_max": 0.002
+  }
+}

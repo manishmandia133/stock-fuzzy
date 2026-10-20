@@ -64,7 +64,7 @@ def main():
     train_vol_sorted = np.sort(
         eng.loc[eng["split"] == "train", cfg.VOL_COL].values)
     eng["vol_rank"] = D._vol_rank(train_vol_sorted, eng[cfg.VOL_COL].values)
-    eng["fuzzy_lr"] = [fz.fuzzy_lr(v) for v in eng["vol_rank"].values]
+    eng["fuzzy_lr"] = [fz.fuzzy_lr_vol_only(v) for v in eng["vol_rank"].values]
 
     out = eng.reset_index()
     out.to_csv(PROC_CSV, index=False)
