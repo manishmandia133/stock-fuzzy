@@ -1,7 +1,7 @@
 """Main experiment driver.
 
 Usage:
-    python main.py [--variants M2 M3 M4 M5 M6 fixed] [--seeds 10] [--no-plots]
+    python main.py [--variants Fuzzy_MoE Fuzzy_Input ...] [--seeds 10] [--no-plots]
 
 Protocol
   1. Download + engineer features (^GSPC 2015-2025).
@@ -11,9 +11,8 @@ Protocol
   5. Write results.csv + RESULTS.md.
 """
 import json
-import os
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -31,8 +30,8 @@ def _fmt(x, nd=4):
 
 
 def main(variants=None, seeds=None, make_plots=True):
-    variants = list(variants or cfg.VARIANTS)
-    seeds    = list(seeds    or cfg.SEEDS)
+    variants = list(cfg.VARIANTS if variants is None else variants)
+    seeds    = list(cfg.SEEDS if seeds is None else seeds)
 
     for v in variants:
         if v not in VARIANTS:
@@ -170,7 +169,7 @@ def main(variants=None, seeds=None, make_plots=True):
     # ── run_config.json ───────────────────────────────────────────────────
     with open("run_config.json", "w", encoding="utf-8") as f:
         json.dump({
-            "generated_utc": datetime.now(UTC).isoformat(),
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
             "ticker":  cfg.TICKER,
             "start":   cfg.START_DATE,
             "end":     cfg.END_DATE,
@@ -210,5 +209,5 @@ if __name__ == "__main__":
     p.add_argument("--no-plots", action="store_true")
     args = p.parse_args()
 
-    seeds_list = list(range(args.seeds)) if args.seeds else cfg.SEEDS
+    seeds_list = list(range(args.seeds)) if args.seeds is not None else cfg.SEEDS
     main(variants=args.variants, seeds=seeds_list, make_plots=not args.no_plots)

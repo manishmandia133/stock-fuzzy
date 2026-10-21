@@ -245,7 +245,7 @@ def write_results_md(table: pd.DataFrame, stats_rows: list, path="RESULTS.md"):
     ]
     if stats_rows:
         lines += [
-            "## Paired tests (fuzzy variants vs M2 baseline, Holm-corrected)",
+            "## Paired tests (fuzzy variants vs Fuzzy_MoE baseline, Holm-corrected)",
             "",
             "| comparison | mean_diff_RMSE | p_t | p_w | Holm_p_t |",
             "|---|---|---|---|---|",

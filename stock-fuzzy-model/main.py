@@ -2,8 +2,8 @@
 
 Examples:
     python main.py                              # all variants, 10 seeds
-    python main.py --variants M2 M4 --seeds 5
-    python main.py --variants fixed M2 --seeds 30 --no-plots
+    python main.py --variants Fuzzy_MoE Fuzzy_Input --seeds 5
+    python main.py --variants Fuzzy_ANFIS --seeds 30 --no-plots
 """
 import argparse
 
@@ -25,5 +25,5 @@ def _parse():
 
 if __name__ == "__main__":
     args  = _parse()
-    seeds = list(range(args.seeds)) if args.seeds else cfg.SEEDS
+    seeds = list(range(args.seeds)) if args.seeds is not None else cfg.SEEDS
     main(variants=args.variants, seeds=seeds, make_plots=not args.no_plots)

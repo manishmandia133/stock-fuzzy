@@ -63,7 +63,7 @@ def _predict(model, X_np, vr_np, tr_np, device):
 
 
 def train_model(data: dict,
-                variant: str = "M2",
+                variant: str = "Fuzzy_Input",
                 seed: int = 0,
                 epochs: int = cfg.EPOCHS,
                 batch_size: int = cfg.BATCH_SIZE,
@@ -177,6 +177,7 @@ def train_model(data: dict,
     if best_state is None:
         best_state = copy.deepcopy(model.state_dict())
         best_epoch = len(history["val_loss"])
+        best_ma = float(history["val_loss_ma"][-1])
         print(f"  [{variant} s{seed}] WARNING: no best state before MIN_EPOCHS; "
               "using final weights.")
     model.load_state_dict(best_state)
