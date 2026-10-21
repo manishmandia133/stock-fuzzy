@@ -125,7 +125,7 @@ def main(variants=None, seeds=None, make_plots=True):
 
     # ── Paired tests (fuzzy variants vs M2 baseline, Holm-corrected) ──────
     stats_rows = []
-    base_v = "M2"
+    base_v = "Fuzzy_MoE"
     if base_v in variants and len(variants) > 1:
         base_rmse = res[res["variant"] == base_v]["RMSE"].values
         others = [v for v in variants if v != base_v]

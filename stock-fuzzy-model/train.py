@@ -1,11 +1,10 @@
 """Training loop for ^GSPC regression.
 
-Supported variants (all fuzzy):
-  M2    – vol_rank → LR (Mamdani), RegressionLSTM
-  M3    – (vol_rank, trend_rank) → LR (9-rule FIS), RegressionLSTM
-  M4    – FuzzyMoELSTM (3 experts), vol_rank → LR
-  M5    – FuzzyInputLSTM (membership input), vol_rank → LR
-  M6    – RegressionLSTM, vol → LR, fuzzy-scaled grad clip
+Supported variants (strictly fuzzy models):
+  Fuzzy_MoE          – Takagi-Sugeno / Ruspini Fuzzy-gated MoE (3 regime experts)
+  Fuzzy_Input        – Neural Fuzzy with Ruspini membership degrees as inputs
+  Fuzzy_Adaptive_MoE – Fuzzy MoE + fuzzy adaptive gradient clipping
+  Fuzzy_ANFIS        – Hybrid ANFIS architecture (Fuzzy inputs + Fuzzy MoE)
 
 Returns (model, history, val_preds_np, test_preds_np, info).
 val_preds / test_preds are predictions as log-return arrays (numpy).
@@ -32,13 +31,12 @@ def _make_criterion():
 
 
 def _get_lr(variant: str, vr: float, tr: float) -> float:
-    if variant == "M3":
-        return fz.fuzzy_lr_2input(vr, tr)
-    return fz.fuzzy_lr(vr)   # M2, M4, M5, M6 (all fuzzy)
+    # All variants use the Mamdani fuzzy LR controller
+    return fz.fuzzy_lr(vr)
 
 
 def _get_clip(variant: str, vr: float) -> float:
-    if variant == "M6":
+    if "Adaptive" in variant:
         # High vol → tighter clip (reduce noise in gradient)
         return float(np.clip(cfg.GRAD_CLIP * (1.0 - 0.5 * vr), 0.1, cfg.GRAD_CLIP))
     return cfg.GRAD_CLIP

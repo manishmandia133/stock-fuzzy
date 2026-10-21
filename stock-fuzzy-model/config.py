@@ -94,13 +94,12 @@ LR_SLOW_C  = 0.4e-3
 LR_MED_C   = 0.8e-3
 LR_FAST_C  = 1.6e-3
 
-# ── Variants (fuzzy only) ──────────────────────────────────────────────────
-# M2     – vol_rank → LR (Mamdani), RegressionLSTM
-# M3     – (vol_rank × trend_rank) → LR (9-rule FIS), RegressionLSTM
-# M4     – FuzzyMoE: 3-expert LSTM, Ruspini blend by vol_rank
-# M5     – membership degrees appended to input (FuzzyInputLSTM)
-# M6     – M2 + fuzzy-scaled gradient clip by regime
-VARIANTS = ["M2", "M3", "M4", "M5", "M6"]
+# ── Variants (strictly fuzzy-based models only) ───────────────────────────
+# Fuzzy_MoE          – Takagi-Sugeno / Ruspini Fuzzy-gated MoE (3 regime experts)
+# Fuzzy_Input        – Neural Fuzzy with Ruspini membership degrees as inputs
+# Fuzzy_Adaptive_MoE – Fuzzy MoE + fuzzy adaptive gradient clipping
+# Fuzzy_ANFIS        – Hybrid ANFIS architecture (Fuzzy inputs + Fuzzy MoE)
+VARIANTS = ["Fuzzy_MoE", "Fuzzy_Input", "Fuzzy_Adaptive_MoE", "Fuzzy_ANFIS"]
 
 # ── Seeds ──────────────────────────────────────────────────────────────────
 SEEDS = list(range(10))   # default; override with --seeds N

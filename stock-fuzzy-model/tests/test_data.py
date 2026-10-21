@@ -100,18 +100,14 @@ def test_reconstruct_close():
 
 
 def test_model_forward_shapes():
-    """All three model classes must produce (B,) output."""
+    """All fuzzy model classes must produce (B,) output."""
     import torch
-    from model import RegressionLSTM, FuzzyMoELSTM, FuzzyInputLSTM
+    from model import FuzzyMoELSTM, FuzzyInputLSTM, FuzzyANFISLSTM
     B, T, F = 4, 20, 19
     x  = torch.randn(B, T, F)
     vr = torch.rand(B)
     tr = torch.rand(B)
-    for cls, kwargs in [
-        (RegressionLSTM, {"n_features": F}),
-        (FuzzyMoELSTM,   {"n_features": F}),
-        (FuzzyInputLSTM, {"n_features": F}),
-    ]:
-        m = cls(**kwargs)
+    for cls in [FuzzyMoELSTM, FuzzyInputLSTM, FuzzyANFISLSTM]:
+        m = cls(n_features=F)
         y = m(x, vr=vr, tr=tr)
         assert y.shape == (B,), f"{cls.__name__} output shape {y.shape} != ({B},)"
