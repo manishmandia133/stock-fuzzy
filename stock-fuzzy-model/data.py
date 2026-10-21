@@ -1,11 +1,14 @@
-"""Data pipeline (PLAN T1 + T2 + T3).
+"""Data pipeline for ^GSPC regression.
 
-Rules (do NOT change):
-  - Chronological split, scaler fit on train only, clip after transform.
-  - Window label at end date t never uses information after t+1.
-  - TARGET_MODE="direction": label = Close[t+1] > Close[t].
-  - TARGET_MODE="vol": label = next-day hl_range > TRAIN-set median.
-  - UNIVERSE_MODE="pooled": one global set of date cut points for all tickers.
+Target: log(Close_{t+1} / Close_t) at row t — next-day log return.
+Reconstruction: pred_close = Close_t * exp(pred_log_return).
+
+Leakage rules
+  • All rolling/EMA features are trailing (look only at data ≤ t).
+  • Monthly FRED series (UNRATE, UMCSENT) shifted one month before ffill.
+  • StandardScaler fit on TRAIN rows only.
+  • Target at t uses Close[t+1]; windows end at t → no future feature leaks.
+  • Leakage unit test: perturbing rows after t must not change features at t.
 """
 import os
 import re
@@ -17,382 +20,383 @@ from sklearn.preprocessing import StandardScaler
 
 import config as cfg
 
-# ------------------------------------------------------------------ cache
 CACHE_DIR = os.path.join("data", "cache")
-VIX_CACHE = os.path.join("data", "raw_VIX.csv")
 
 
-def _cache_path(ticker: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", ticker).strip("_")
+def _cache(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
     return os.path.join(CACHE_DIR, f"{safe}.csv")
 
 
-def _cache_ok(path: str, min_rows: int) -> bool:
-    if not os.path.exists(path):
-        return False
-    try:
-        tail = pd.read_csv(path, usecols=["Date"]).tail(1)
-        if tail.empty:
-            return False
-        last = pd.to_datetime(tail["Date"].iloc[0])
-        # yfinance END_DATE is exclusive; allow a short reporting lag.
-        fresh = last >= pd.Timestamp(cfg.END_DATE) - pd.Timedelta(days=10)
-        with open(path, encoding="utf-8") as fh:
-            n = sum(1 for _ in fh) - 1
-        return fresh and n >= min_rows
-    except Exception:  # noqa: BLE001 -- corrupt cache -> redownload
-        return False
+# ── Downloads ───────────────────────────────────────────────────────────────
 
-
-# ------------------------------------------------------------------ vix
-def fetch_vix(start=cfg.START_DATE, end=cfg.END_DATE):
-    """Download ^VIX close once, cache it, and return Date/Close frame."""
-    if os.path.exists(VIX_CACHE):
-        return pd.read_csv(VIX_CACHE, parse_dates=["Date"])
-    os.makedirs("data", exist_ok=True)
-    raw = yf.download(cfg.VIX_TICKER, start=start, end=end,
+def fetch_gspc(start=cfg.START_DATE, end=cfg.END_DATE) -> pd.DataFrame:
+    """Download/cache ^GSPC OHLCV. Returns Date-indexed DataFrame."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = _cache("GSPC")
+    if os.path.exists(path):
+        df = pd.read_csv(path, index_col="Date", parse_dates=True)
+        if len(df) > 200:
+            return df
+    raw = yf.download(cfg.TICKER, start=start, end=end,
                       auto_adjust=True, progress=False)
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
-    out = raw[["Close"]].reset_index().rename(columns={"Close": "vix_level"})
-    out.to_csv(VIX_CACHE, index=False)
-    return out
+    df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna(how="all")
+    df.index.name = "Date"
+    df.to_csv(path, index=True)
+    return df
 
 
-def attach_vix(df: pd.DataFrame) -> pd.DataFrame:
-    """Attach same-day VIX close to an OHLCV frame (no future information)."""
-    vix = fetch_vix().set_index("Date")["vix_level"].sort_index()
-    vix.index = pd.to_datetime(vix.index)
-    out = df.copy()
-    out["vix_level"] = vix.reindex(out.index).ffill()
-    return out
+def _fetch_price_series(ticker: str, col_name: str,
+                        start=cfg.START_DATE, end=cfg.END_DATE) -> pd.Series:
+    path = _cache(col_name)
+    if os.path.exists(path):
+        s = pd.read_csv(path, index_col="Date", parse_dates=True).squeeze()
+        if len(s) > 100:
+            return s.rename(col_name)
+    raw = yf.download(ticker, start=start, end=end,
+                      auto_adjust=True, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    s = raw["Close"].rename(col_name)
+    s.index.name = "Date"
+    s.to_frame().to_csv(path)
+    return s
 
 
-# ---------------------------------------------------------------- download
-def _download_chunk(chunk, start, end):
-    raw = yf.download(
-        tickers=chunk, start=start, end=end, group_by="ticker",
-        auto_adjust=True, threads=True, progress=False,
-    )
-    for t in chunk:
+def fetch_fred(series_id: str) -> pd.Series:
+    path = _cache(f"FRED_{series_id}")
+    if os.path.exists(path):
         try:
-            if isinstance(raw.columns, pd.MultiIndex):
-                df = raw[t].copy()
-            else:
-                df = raw.copy()
-            # flatten any residual MultiIndex (e.g. ('^GSPC','Open') pairs)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(-1)
-            df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(how="all")
-            df = attach_vix(df)
-            if len(df) > (cfg.WINDOW + 30):
-                df.to_csv(_cache_path(t), index_label="Date")
-            else:
-                print(f"  skipping {t}: insufficient history ({len(df)} rows)")
-        except Exception as e:  # noqa: BLE001 -- per-ticker skip, report only
-            print(f"  skipping {t}: {e}")
-
-
-def batch_download(tickers, start=cfg.START_DATE, end=cfg.END_DATE, chunk_size=20):
-    """Load OHLCV per ticker from cache, downloading only missing symbols.
-
-    Returns {ticker: DataFrame} indexed by Date with OHLCV + VIX columns.
-    """
+            s = pd.read_csv(path, index_col="Date", parse_dates=True).squeeze()
+            if len(s) > 10:
+                return s.rename(series_id)
+        except Exception:
+            pass
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    raw = pd.read_csv(url)
+    date_col = "observation_date" if "observation_date" in raw.columns else "DATE"
+    val_col  = series_id if series_id in raw.columns else raw.columns[-1]
+    if date_col not in raw.columns:
+        raise ValueError(f"FRED {series_id} returned unexpected format: {raw.columns}")
+    df = raw[[date_col, val_col]].copy()
+    df.columns = ["Date", series_id]
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+    df = df.dropna(subset=["Date"]).sort_values("Date").set_index("Date")
     os.makedirs(CACHE_DIR, exist_ok=True)
-    min_rows = cfg.WINDOW + 30
-    missing = [t for t in tickers if not _cache_ok(_cache_path(t), min_rows)]
-    if missing:
-        for i in range(0, len(missing), chunk_size):
-            chunk = missing[i:i + chunk_size]
-            print(f"Downloading {i + 1}-{i + len(chunk)} / {len(missing)} missing ...")
-            _download_chunk(chunk, start, end)
-
-    frames = {}
-    for t in tickers:
-        p = _cache_path(t)
-        if not os.path.exists(p):
-            print(f"  skipping {t}: no cached data")
-            continue
-        df = pd.read_csv(p, index_col="Date", parse_dates=True).sort_index()
-        if len(df) > min_rows:
-            frames[t] = df
-        else:
-            print(f"  skipping {t}: insufficient history ({len(df)} rows)")
-    return frames
+    df.to_csv(path)
+    return df[series_id]
 
 
-# --------------------------------------------------------------- features
+def attach_macro(df: pd.DataFrame,
+                 start=cfg.START_DATE, end=cfg.END_DATE) -> pd.DataFrame:
+    """Attach VIX, USDX, EFFR, UNRATE, UMCSENT, T10Y2Y to a Date-indexed DataFrame."""
+    out = df.copy()
+    idx = out.index
+
+    for ticker, name in [(cfg.VIX_TICKER, "VIX"), (cfg.USDX_TICKER, "USDX")]:
+        s = _fetch_price_series(ticker, name, start, end)
+        out[name] = s.reindex(idx, method="ffill").ffill()
+
+    for sid in cfg.FRED_SERIES:
+        try:
+            s = fetch_fred(sid).sort_index()
+            if sid in ("UNRATE", "UMCSENT"):
+                s = s.shift(1)       # publication-lag guard: use last month's value
+            out[sid] = s.reindex(idx, method="ffill").ffill()
+        except Exception as exc:
+            if sid == "T10Y2Y":
+                try:
+                    tnx = _fetch_price_series("^TNX", "TNX", start, end)
+                    irx = _fetch_price_series("^IRX", "IRX", start, end)
+                    spread = (tnx - irx).reindex(idx, method="ffill").ffill()
+                    out[sid] = spread
+                    print("  Note: FRED T10Y2Y offline; using ^TNX - ^IRX yield spread proxy")
+                    continue
+                except Exception:
+                    pass
+            print(f"  WARNING: FRED {sid} failed ({exc}); filling with 0")
+            out[sid] = 0.0
+
+    return out
+
+
+# ── Feature engineering ─────────────────────────────────────────────────────
+
+def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain  = delta.clip(lower=0.0)
+    loss  = -delta.clip(upper=0.0)
+    ag = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    al = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    rs  = ag / al.where(al > 0)
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    rsi = rsi.mask((al == 0) & (ag > 0), 100.0)
+    rsi = rsi.mask((al == 0) & (ag == 0), 50.0)
+    return rsi
+
+
+def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    prev = df["Close"].shift(1)
+    tr   = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - prev).abs(),
+        (df["Low"]  - prev).abs(),
+    ], axis=1).max(axis=1)
+    return tr.rolling(period, min_periods=period).mean()
+
+
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Stationary features only (no raw OHLC). Keeps Close for label checks.
+    """Build all features + target. Fully causal (all look backward only).
 
-    Adds both target columns so TARGET_MODE can be switched without re-download:
-      target_direction : Close[t+1] > Close[t]
-      target_vol_raw   : next-day hl_range (or |return|) before the train median
+    Input df must contain: Open, High, Low, Close, Volume, VIX, USDX,
+    EFFR, UNRATE, UMCSENT, T10Y2Y (attach_macro must be called first).
+
+    Returns DataFrame with ALL_FEATURES cols + TARGET_COL + 'Close' (raw).
     """
     out = df.copy()
-    out["return_1d"] = out["Close"].pct_change()
-    out["hl_range"] = (out["High"] - out["Low"]) / out["Close"]
-    out["oc_ret"] = (out["Close"] - out["Open"]) / out["Open"]
-    out["vol_chg"] = np.log(out["Volume"].replace(0, np.nan)).diff()
-    out["volatility_14d"] = out["return_1d"].rolling(14).std()
-    if "vix_level" in out.columns:
-        vix = out["vix_level"]
-        out["vix_z20"] = (vix - vix.rolling(20).mean()) / vix.rolling(20).std()
+    out.index = pd.to_datetime(out.index)
+    out = out.sort_index()
+    close = out["Close"].astype(float)
 
-    out["target_direction"] = (out["Close"].shift(-1) > out["Close"]).astype(int)
-    out["next_hl_range"] = out["hl_range"].shift(-1)
-    out["next_abs_return"] = out["return_1d"].abs().shift(-1)
-    source = "next_hl_range" if cfg.VOL_TARGET_SOURCE == "hl_range" else "next_abs_return"
-    out[cfg.VOL_TARGET_RAW_COL] = out[source]
+    # Core technical (all trailing)
+    ema12 = close.ewm(span=12, adjust=False, min_periods=12).mean()
+    ema26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
+    out["MACD"] = ema12 - ema26
+    out["RSI"]  = _rsi(close)
+    out["ATR"]  = _atr(out)
+
+    # Log returns
+    log_ret = np.log(close / close.shift(1))
+    out["log_ret_1d"]  = log_ret
+    out["log_ret_5d"]  = log_ret.rolling(5,  min_periods=5).sum()
+    out["log_ret_20d"] = log_ret.rolling(20, min_periods=20).sum()
+
+    # Lagged close (previous day's close — causal)
+    out["prev_close"] = close.shift(1)
+
+    # VIX z-score over 20 days
+    vix20m = out["VIX"].rolling(20, min_periods=20).mean()
+    vix20s = out["VIX"].rolling(20, min_periods=20).std().clip(lower=1e-8)
+    out["vix_z20"] = (out["VIX"] - vix20m) / vix20s
+
+    # MA ratios (Close/MA50, MA50/MA200)
+    sma50  = close.rolling(50,  min_periods=50).mean()
+    sma200 = close.rolling(200, min_periods=200).mean()
+    out["close_ma50_ratio"]  = close / sma50.where(sma50 > 0)  - 1.0
+    out["ma50_ma200_ratio"]  = sma50 / sma200.where(sma200 > 0) - 1.0
+
+    # Volume change
+    out["vol_change"] = out["Volume"].pct_change().clip(-5.0, 5.0)
+
+    # Realized volatility (annualised)
+    out["realized_vol_20d"] = log_ret.rolling(20, min_periods=20).std() * np.sqrt(252)
+
+    # ── Target: next-day log return (uses only shift(-1) — no look-ahead in features)
+    out[cfg.TARGET_COL] = log_ret.shift(-1)
 
     out = out.replace([np.inf, -np.inf], np.nan)
-    missing = [c for c in cfg.FEATURE_COLS if c not in out.columns]
-    if missing:
-        raise KeyError(f"missing engineered features: {missing}; attach VIX first")
-    out = out.dropna(subset=cfg.FEATURE_COLS).copy()
-    out = out.iloc[:-1]  # last row's next-day target is undefined
-    if cfg.TARGET_MODE == "vol":
-        out = out.dropna(subset=[cfg.VOL_TARGET_RAW_COL]).copy()
+    needed = cfg.ALL_FEATURES + [cfg.TARGET_COL, "Close"]
+    out = out.dropna(subset=[c for c in needed if c in out.columns])
     return out
 
 
-def make_windows(feature_arr, target_arr, dates, window):
-    """Slice windows. y[k] aligns with window end t; end_dates[k] = date of t."""
-    X, y, ends = [], [], []
-    for i in range(window, len(feature_arr)):
-        X.append(feature_arr[i - window:i])
-        y.append(target_arr[i - 1])
-        ends.append(dates[i - 1])
-    if not X:
-        empty_x = np.empty((0, window, feature_arr.shape[1]))
-        return empty_x, np.empty((0,)), np.empty((0,), dtype="datetime64[ns]")
-    return np.array(X), np.array(y), np.array(ends, dtype="datetime64[ns]")
+# ── Leakage unit test ───────────────────────────────────────────────────────
 
+def leakage_unit_test(df_with_macro: pd.DataFrame) -> None:
+    """Assert that perturbing rows after t does not change features at t.
 
-def _vol_rank(searchsorted_base: np.ndarray, values: np.ndarray) -> np.ndarray:
-    """Percentile rank (0-1) of values within TRAIN distribution only."""
-    idx = np.searchsorted(searchsorted_base, values, side="right")
-    return idx / max(len(searchsorted_base), 1)
-
-
-def _window_targets(part: pd.DataFrame, vol_median) -> np.ndarray:
-    if cfg.TARGET_MODE == "direction":
-        return part[cfg.DIRECTION_TARGET_COL].values.astype(int)
-    if vol_median is None or not np.isfinite(vol_median):
-        raise ValueError("vol target requires a finite train-set median")
-    return (part[cfg.VOL_TARGET_RAW_COL].values > vol_median).astype(int)
-
-
-def _label_spotcheck(label_df: pd.DataFrame, full_df: pd.DataFrame,
-                     vol_median, n=3):
-    """T2: verify labels against the raw next-day quantity (no lookahead)."""
-    if len(label_df) == 0:
+    Selects an evaluation date chk_date from feat_orig, finds its raw index
+    position t, perturbs strictly rows t+1 onward in raw data, re-computes
+    features, and verifies all features at chk_date remain identical.
+    Also confirms that the target at chk_date (next-day return) DOES change.
+    """
+    feat_orig = engineer_features(df_with_macro)
+    if len(feat_orig) < 10:
+        print("  leakage check: SKIP (insufficient rows)")
         return
-    rng = np.random.default_rng(0)
-    sample_idx = rng.choice(len(label_df), size=min(n, len(label_df)),
-                            replace=False)
-    closes = full_df["Close"].values
-    highs = full_df["High"].values
-    lows = full_df["Low"].values
-    for i in sample_idx:
-        end_date = label_df.index[i]
-        gi = full_df.index.get_loc(end_date)
-        if gi + 1 >= len(full_df):
-            raise AssertionError(f"no next day for {end_date}")
-        if cfg.TARGET_MODE == "direction":
-            expected = int(closes[gi + 1] > closes[gi])
-        else:
-            if cfg.VOL_TARGET_SOURCE == "hl_range":
-                actual_raw = (highs[gi + 1] - lows[gi + 1]) / closes[gi + 1]
-            else:
-                actual_raw = abs(closes[gi + 1] / closes[gi] - 1.0)
-            stored_raw = float(full_df[cfg.VOL_TARGET_RAW_COL].iloc[gi])
-            assert np.isclose(stored_raw, actual_raw, rtol=1e-9, atol=1e-12), (
-                f"vol target misaligned at {end_date}: stored={stored_raw} "
-                f"actual next-day={actual_raw}")
-            expected = int(actual_raw > vol_median)
-        got = int(label_df[cfg.TARGET_COL].iloc[i])
-        assert got == expected, f"label mismatch at {end_date}: got={got} expected={expected}"
+
+    # Choose a check date from the middle of the engineered frame
+    check_idx = len(feat_orig) // 2
+    chk_date  = feat_orig.index[check_idx]
+
+    # Find the corresponding row in df_with_macro
+    raw_loc = df_with_macro.index.get_loc(chk_date)
+    perturb_from = raw_loc + 1
+    if perturb_from >= len(df_with_macro):
+        print("  leakage check: SKIP (chk_date is last row)")
+        return
+
+    df_pert = df_with_macro.copy()
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df_pert.columns:
+            loc = df_pert.columns.get_loc(col)
+            df_pert.iloc[perturb_from:, loc] = df_pert.iloc[perturb_from:, loc] * 1.05
+
+    feat_pert = engineer_features(df_pert)
+
+    assert chk_date in feat_pert.index, f"Check date {chk_date} missing in perturbed features"
+
+    for col in cfg.ALL_FEATURES:
+        if col not in feat_orig.columns or col not in feat_pert.columns:
+            continue
+        o = feat_orig.loc[chk_date, col]
+        p = feat_pert.loc[chk_date, col]
+        if pd.isna(o) and pd.isna(p):
+            continue
+        if pd.isna(o) or pd.isna(p):
+            continue
+        diff = abs(float(o) - float(p))
+        if diff > 1e-6:
+            raise AssertionError(
+                f"Leakage detected in feature '{col}' at {chk_date}: "
+                f"diff={diff:.2e} (orig={o:.6f}, pert={p:.6f})"
+            )
+
+    # Confirm target is NOT in feature_cols
+    assert cfg.TARGET_COL not in cfg.ALL_FEATURES, \
+        f"Target '{cfg.TARGET_COL}' must not appear in feature_cols!"
+
+    # Verify target DOES reflect the perturbation at t+1
+    orig_tgt = feat_orig.loc[chk_date, cfg.TARGET_COL]
+    pert_tgt = feat_pert.loc[chk_date, cfg.TARGET_COL]
+    assert abs(float(orig_tgt) - float(pert_tgt)) > 1e-5, \
+        "Target did not reflect future perturbation at t+1!"
+
+    print("  leakage check: PASS")
 
 
-def _windows_from_part(part: pd.DataFrame, scaler, vol_base, window):
-    if len(part) <= window:
-        return (np.empty((0, window, len(cfg.FEATURE_COLS))),
-                np.empty((0,)),
-                np.empty((0,), dtype="datetime64[ns]"),
-                np.empty((0,)))
-    scaled = np.clip(scaler.transform(part[cfg.FEATURE_COLS].values),
-                     -cfg.CLIP, cfg.CLIP)
-    X, y, ends = make_windows(
-        scaled, part[cfg.TARGET_COL].values,
-        part.index.values, window)
-    # vol_rank from RAW vol of the window's last day, ranked vs TRAIN only
-    raw_vol_last = part[cfg.VOL_COL].values[window - 1:]
-    vr = _vol_rank(vol_base, raw_vol_last[:len(X)])
-    return X, y, ends, vr
+# ── Split & window ──────────────────────────────────────────────────────────
 
+def split_data(df: pd.DataFrame):
+    """Chronological 80/20 split, with val = last 20 % of the 80 % train block.
 
-def split_scale_window(df: pd.DataFrame, window=cfg.WINDOW,
-                       train_frac=cfg.TRAIN_FRAC, val_frac=cfg.VAL_FRAC):
-    """Chronological per-ticker split; scaler/median/vol_rank calibrated on train only."""
+    Returns (train_df, val_df, test_df).
+    """
     n = len(df)
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
+    n_trainval = int(n * cfg.TRAIN_VAL_FRAC)
+    n_train    = int(n_trainval * (1.0 - cfg.VAL_FRAC_OF_TRAIN))
     train_df = df.iloc[:n_train]
-    val_df = df.iloc[n_train:n_train + n_val]
-    test_df = df.iloc[n_train + n_val:]
+    val_df   = df.iloc[n_train:n_trainval]
+    test_df  = df.iloc[n_trainval:]
+    assert train_df.index.max() < val_df.index.min(),  "train/val overlap"
+    assert val_df.index.max()   < test_df.index.min(), "val/test overlap"
+    return train_df, val_df, test_df
 
-    # GATE: chronological order per ticker
-    assert train_df.index.max() < val_df.index.min(), "train/val overlap"
-    assert val_df.index.max() < test_df.index.min(), "val/test overlap"
 
+def _make_windows(feat_arr, target_arr, close_arr, dates_arr, window):
+    """Sliding windows of length `window`.
+
+    Window k covers rows k .. k+window-1.
+    y[k]     = target_arr[k+window-1]   (log-return at end of window)
+    close[k] = close_arr[k+window-1]    (Close_t, for price reconstruction)
+    date[k]  = dates_arr[k+window-1]
+    """
+    n = len(feat_arr) - window
+    if n <= 0:
+        F = feat_arr.shape[1]
+        return (np.empty((0, window, F)), np.empty(0),
+                np.empty(0), np.empty(0, dtype="datetime64[ns]"))
+    X      = np.stack([feat_arr[i:i + window]     for i in range(n)])
+    y      = np.array([target_arr[i + window - 1] for i in range(n)])
+    closes = np.array([close_arr[i + window - 1]  for i in range(n)])
+    dates  = np.array([dates_arr[i + window - 1]  for i in range(n)],
+                      dtype="datetime64[ns]")
+    return X, y, closes, dates
+
+
+def _vol_rank(vol_vals: np.ndarray, train_sorted: np.ndarray) -> np.ndarray:
+    """Percentile rank (0–1) of vol_vals within train distribution."""
+    idx = np.searchsorted(train_sorted, vol_vals, side="right")
+    return idx / max(len(train_sorted), 1)
+
+
+# ── Main pipeline entry point ───────────────────────────────────────────────
+
+def build_dataset(start=cfg.START_DATE, end=cfg.END_DATE,
+                  feature_cols=None) -> dict:
+    """Full pipeline: download → macro → engineer → split → scale → window.
+
+    Returns dict with keys:
+      X_{train,val,test}, y_{train,val,test},
+      close_{train,val,test}, vr_{train,val,test}, tr_{train,val,test},
+      dates_{train,val,test}, scaler, train_vol_sorted, train_trend_sorted
+    """
+    feature_cols = list(feature_cols or cfg.ALL_FEATURES)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs("data", exist_ok=True)
+
+    print("── Downloading data ──")
+    gspc = fetch_gspc(start, end)
+    print(f"  ^GSPC raw rows: {len(gspc)}")
+
+    gspc = attach_macro(gspc, start, end)
+    print("  macro attached")
+
+    df = engineer_features(gspc)
+    print(f"  after engineering: {len(df)} rows "
+          f"({df.index[0].date()} .. {df.index[-1].date()})")
+
+    missing = [c for c in feature_cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Features missing after engineering: {missing}")
+
+    # Leakage test (on a slice, not full data, to avoid re-downloading)
+    leakage_unit_test(gspc)
+
+    # Split
+    train_df, val_df, test_df = split_data(df)
+    print(f"  train: {len(train_df)} rows  "
+          f"({train_df.index[0].date()} .. {train_df.index[-1].date()})")
+    print(f"  val:   {len(val_df)} rows  "
+          f"({val_df.index[0].date()}  .. {val_df.index[-1].date()})")
+    print(f"  test:  {len(test_df)} rows  "
+          f"({test_df.index[0].date()} .. {test_df.index[-1].date()})")
+
+    # Scaler fit on train only
     scaler = StandardScaler()
-    scaler.fit(train_df[cfg.FEATURE_COLS].values)
+    scaler.fit(train_df[feature_cols].values)
 
-    train_vol_sorted = np.sort(train_df[cfg.VOL_COL].values)  # raw vol, train only
-    vol_median = (float(np.nanmedian(train_df[cfg.VOL_TARGET_RAW_COL].values))
-                  if cfg.TARGET_MODE == "vol" else None)
+    def scale(part):
+        return np.clip(scaler.transform(part[feature_cols].values),
+                       -cfg.CLIP, cfg.CLIP)
 
-    labeled = {}
+    # Regime references (vol_rank, trend_rank) from train distribution
+    train_vol_sorted   = np.sort(train_df[cfg.VOL_COL].values)
+    train_trend_sorted = np.sort(train_df["close_ma50_ratio"].values)
+
+    data = {"scaler": scaler,
+            "train_vol_sorted":   train_vol_sorted,
+            "train_trend_sorted": train_trend_sorted,
+            "feature_cols": feature_cols}
+
     for name, part in [("train", train_df), ("val", val_df), ("test", test_df)]:
-        frame = part.copy()
-        frame[cfg.TARGET_COL] = _window_targets(part, vol_median)
-        labeled[name] = frame
+        feat = scale(part)
+        X, y, closes, dates = _make_windows(
+            feat, part[cfg.TARGET_COL].values,
+            part["Close"].values, part.index.values, cfg.WINDOW)
 
-    # GATE (T2): label spot-check on 3 train windows
-    _label_spotcheck(labeled["train"], df, vol_median)
+        # vol_rank and trend_rank at each window's last row
+        vol_vals   = part[cfg.VOL_COL].values[cfg.WINDOW - 1:][:len(X)]
+        trend_vals = part["close_ma50_ratio"].values[cfg.WINDOW - 1:][:len(X)]
+        vr = _vol_rank(vol_vals,   train_vol_sorted)
+        tr = _vol_rank(trend_vals, train_trend_sorted)
 
-    out = {name: _windows_from_part(frame, scaler, train_vol_sorted, window)
-           for name, frame in labeled.items()}
-    return out, scaler, train_vol_sorted, vol_median
+        data[f"X_{name}"]     = X
+        data[f"y_{name}"]     = y
+        data[f"close_{name}"] = closes
+        data[f"vr_{name}"]    = vr
+        data[f"tr_{name}"]    = tr
+        data[f"dates_{name}"] = dates
+        print(f"  {name}: X={X.shape}  "
+              f"y=[{y.min():.4f}, {y.max():.4f}]  "
+              f"close=[{closes.min():.1f}, {closes.max():.1f}]")
 
+    # Sanity checks
+    assert np.isfinite(data["X_train"]).all(), "NaN/Inf in X_train"
+    assert np.isfinite(data["y_train"]).all(), "NaN/Inf in y_train"
+    assert len(data["X_train"]) > 200, "Too few training windows"
 
-def _global_cut_dates(engineered: dict):
-    """One chronological set of cut dates shared by every ticker."""
-    all_dates = np.sort(np.unique(np.concatenate(
-        [df.index.values for df in engineered.values()])))
-    n = len(all_dates)
-    tr_i = max(1, int(n * cfg.TRAIN_FRAC)) - 1
-    va_i = max(tr_i + 1, int(n * (cfg.TRAIN_FRAC + cfg.VAL_FRAC))) - 1
-    va_i = min(va_i, n - 2)
-    return pd.Timestamp(all_dates[tr_i]), pd.Timestamp(all_dates[va_i])
-
-
-def _build_pooled(engineered: dict, window):
-    train_cut, val_cut = _global_cut_dates(engineered)
-    print(f"pooled date cuts: train<= {train_cut.date()} | "
-          f"val<= {val_cut.date()} | test > {val_cut.date()}")
-
-    pieces = []
-    for t, df in engineered.items():
-        tr = df.loc[df.index <= train_cut]
-        va = df.loc[(df.index > train_cut) & (df.index <= val_cut)]
-        te = df.loc[df.index > val_cut]
-        if len(tr) <= window or len(te) <= window:
-            print(f"  skipping {t}: insufficient split windows "
-                  f"(train={len(tr)}, test={len(te)})")
-            continue
-        assert tr.index.max() < va.index.min(), f"{t}: train/val overlap"
-        assert va.index.max() < te.index.min(), f"{t}: val/test overlap"
-        pieces.append((t, tr, va, te))
-
-    if not pieces:
-        raise RuntimeError("no ticker produced usable pooled windows")
-
-    train_feats = np.concatenate([p[1][cfg.FEATURE_COLS].values for p in pieces])
-    scaler = StandardScaler()
-    scaler.fit(train_feats)
-    vol_base = np.sort(np.concatenate([p[1][cfg.VOL_COL].values for p in pieces]))
-    vol_median = (float(np.nanmedian(np.concatenate(
-        [p[1][cfg.VOL_TARGET_RAW_COL].values for p in pieces])))
-        if cfg.TARGET_MODE == "vol" else None)
-
-    parts = {"train": [], "val": [], "test": []}
-    kept = []
-    for t, tr, va, te in pieces:
-        labeled = {}
-        for name, part in [("train", tr), ("val", va), ("test", te)]:
-            frame = part.copy()
-            frame[cfg.TARGET_COL] = _window_targets(part, vol_median)
-            labeled[name] = frame
-        # T2 spot-check once, on the first usable ticker
-        if not kept:
-            _label_spotcheck(labeled["train"], engineered[t], vol_median)
-        windows = {name: _windows_from_part(frame, scaler, vol_base, window)
-                   for name, frame in labeled.items()}
-        if len(windows["train"][0]) == 0 or len(windows["test"][0]) == 0:
-            continue
-        kept.append(t)
-        for name, bucket in parts.items():
-            bucket.append(windows[name])
-
-    data = {}
-    for name in ["train", "val", "test"]:
-        X = np.concatenate([p[0] for p in parts[name]], axis=0)
-        y = np.concatenate([p[1] for p in parts[name]], axis=0)
-        ends = np.concatenate([p[2] for p in parts[name]], axis=0)
-        vr = np.concatenate([p[3] for p in parts[name]], axis=0)
-        # Regime-aware batching needs chronological order: sort by end_date
-        order = np.argsort(ends)
-        data[f"X_{name}"], data[f"y_{name}"] = X[order], y[order]
-        data[f"end_{name}"], data[f"vr_{name}"] = ends[order], vr[order]
-        print(f"{name}: X={data[f'X_{name}'].shape} y={data[f'y_{name}'].shape}")
-
-    print(f"Tickers contributing usable windows: {len(kept)}")
-    for name in ["train", "val", "test"]:
-        y = data[f"y_{name}"]
-        pos = y.mean()
-        maj = max(pos, 1 - pos)
-        print(f"  {name}: pos_rate={pos:.3f} majority_baseline={maj:.3f}")
-
-    assert not np.isnan(data["X_train"]).any(), "NaN in X_train"
-    assert set(np.unique(data["y_train"])) <= {0, 1}, "non-binary labels"
-    assert len(data["X_train"]) > 0, "no pooled train windows"
-    return data, kept
-
-
-def _build_per_ticker(engineered: dict, window):
-    """Per-ticker split/scale, then concatenate. Keeps the ^GSPC mode available."""
-    parts = {"train": [], "val": [], "test": []}
-    kept = []
-    for t, df in engineered.items():
-        s, _, _, _ = split_scale_window(df, window=window)
-        if len(s["train"][0]) == 0 or len(s["test"][0]) == 0:
-            continue
-        kept.append(t)
-        for name, bucket in parts.items():
-            bucket.append(s[name])
-    print(f"Tickers contributing usable windows: {len(kept)}")
-
-    data = {}
-    for name in ["train", "val", "test"]:
-        X = np.concatenate([p[0] for p in parts[name]], axis=0)
-        y = np.concatenate([p[1] for p in parts[name]], axis=0)
-        ends = np.concatenate([p[2] for p in parts[name]], axis=0)
-        vr = np.concatenate([p[3] for p in parts[name]], axis=0)
-        # Regime-aware batching needs chronological order: sort by end_date
-        order = np.argsort(ends)
-        data[f"X_{name}"], data[f"y_{name}"] = X[order], y[order]
-        data[f"end_{name}"], data[f"vr_{name}"] = ends[order], vr[order]
-        print(f"{name}: X={data[f'X_{name}'].shape} y={data[f'y_{name}'].shape}")
-
-    for name in ["train", "val", "test"]:
-        y = data[f"y_{name}"]
-        pos = y.mean()
-        maj = max(pos, 1 - pos)
-        print(f"  {name}: pos_rate={pos:.3f} majority_baseline={maj:.3f}")
-
-    # GATE (T3): single-ticker ^GSPC must have >1500 train windows, no NaN
-    assert not np.isnan(data["X_train"]).any(), "NaN in X_train"
-    assert len(data["X_train"]) > 1500, (
-        f"n_train={len(data['X_train'])} <= 1500; check universe/dates")
-    return data, kept
-
-
-def build_dataset(engineered: dict, window=cfg.WINDOW):
-    """Split/scale/window, then concatenate. Mode chosen by UNIVERSE_MODE."""
-    if cfg.UNIVERSE_MODE == "pooled":
-        return _build_pooled(engineered, window)
-    if cfg.UNIVERSE_MODE == "gspc":
-        return _build_per_ticker(engineered, window)
-    raise ValueError(f"unknown UNIVERSE_MODE: {cfg.UNIVERSE_MODE!r}")
+    return data

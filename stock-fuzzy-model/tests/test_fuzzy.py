@@ -1,74 +1,66 @@
-"""Unit tests for the fuzzy_dyn controller (run: python -m unittest)."""
-import unittest
-
+"""Tests for fuzzy module (M2, M3, M5 helpers)."""
 import numpy as np
-
-import config as cfg
-import fuzzy as fz
+import pytest
 
 
-class TestFuzzyDynFactor(unittest.TestCase):
-    def test_factor_bounds(self):
-        for dloss in np.linspace(-0.05, 0.05, 201):
-            for vol in np.linspace(0.0, 1.0, 21):
-                f = fz.fuzzy_dyn_factor(dloss, vol)
-                self.assertGreaterEqual(f, 0.4 - 1e-12)
-                self.assertLessEqual(f, 1.15 + 1e-12)
-
-    def test_monotone_worse_means_smaller(self):
-        # For a fixed vol, increasing dloss (worse) must not increase the factor.
-        for vol in np.linspace(0.0, 1.0, 11):
-            factors = [fz.fuzzy_dyn_factor(d, vol)
-                       for d in np.linspace(-0.05, 0.05, 401)]
-            self.assertTrue(all(factors[i] >= factors[i + 1] - 1e-12
-                                for i in range(len(factors) - 1)))
-
-    def test_memberships_partition(self):
-        for dloss in np.linspace(-0.02, 0.02, 41):
-            mu = fz.fuzzy_memberships(dloss, 0.3)
-            self.assertAlmostEqual(mu["improving"] + mu["worse"] +
-                                   mu["flat"], 1.0, places=12)
-            self.assertAlmostEqual(mu["low"] + mu["high"], 1.0, places=12)
-
-    def test_extreme_rule_outputs(self):
-        # Fully improving + low vol -> 1.15
-        self.assertAlmostEqual(fz.fuzzy_dyn_factor(-0.01, 0.0), 1.15, places=12)
-        # Fully worse + high vol -> 0.40
-        self.assertAlmostEqual(fz.fuzzy_dyn_factor(0.01, 1.0), 0.40, places=12)
+def test_m2_gate():
+    import fuzzy as fz
+    g = fz.check_gate()
+    assert g["pass"], str(g)
 
 
-class TestFuzzyDynController(unittest.TestCase):
-    def test_lr_bounds_after_many_updates(self):
-        ctrl = fz.FuzzyDynController()
-        vloss = 0.69
-        for epoch in range(1, 201):
-            vol = 0.5
-            ctrl.update(vloss, vol)
-            self.assertGreaterEqual(ctrl.lr, cfg.LR_MIN - 1e-15)
-            self.assertLessEqual(ctrl.lr, cfg.LR_MAX + 1e-15)
-            vloss *= 0.99  # constant relative improvement
-
-    def test_warmup_is_linear(self):
-        ctrl = fz.FuzzyDynController(base_lr=1e-3, warmup_epochs=3)
-        lrs = [ctrl.warmup_lr(e) for e in (1, 2, 3)]
-        self.assertAlmostEqual(lrs[0], 1e-3 / 3, places=15)
-        self.assertAlmostEqual(lrs[1], 2e-3 / 3, places=15)
-        self.assertAlmostEqual(lrs[2], 1e-3, places=15)
-
-    def test_improvement_increases_lr(self):
-        ctrl = fz.FuzzyDynController()
-        ctrl.prev_vloss = 0.70
-        ctrl.lr = 1e-3
-        new_lr = ctrl.update(0.69, 0.0)
-        self.assertGreater(new_lr, 1e-3)
-
-    def test_worse_high_vol_decreases_lr(self):
-        ctrl = fz.FuzzyDynController()
-        ctrl.prev_vloss = 0.69
-        ctrl.lr = 1e-3
-        new_lr = ctrl.update(0.70, 1.0)
-        self.assertLess(new_lr, 1e-3)
+def test_m2_surface_extremes():
+    """vol_rank=0 → fastest LR; vol_rank=1 → slowest."""
+    import config as cfg, fuzzy as fz
+    lr_lo = fz.fuzzy_lr(0.0)
+    lr_hi = fz.fuzzy_lr(1.0)
+    assert lr_lo > lr_hi, f"LR not decreasing: LR(0)={lr_lo} LR(1)={lr_hi}"
+    # Both in bounds
+    assert cfg.LR_MIN <= lr_lo <= cfg.LR_MAX
+    assert cfg.LR_MIN <= lr_hi <= cfg.LR_MAX
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_m3_9_rules_produce_distinct_outputs():
+    """M3: (Low vol, High trend) should give different LR than (High vol, Low trend)."""
+    import fuzzy as fz
+    lr_lh = fz.fuzzy_lr_2input(0.1, 0.9)   # low vol, high trend → Fast
+    lr_hl = fz.fuzzy_lr_2input(0.9, 0.1)   # high vol, low trend → Slow
+    assert lr_lh > lr_hl, \
+        f"M3 wrong direction: LR(low,high)={lr_lh:.4e} LR(high,low)={lr_hl:.4e}"
+
+
+def test_m3_symmetry_neutral_trend():
+    """M3: at trend=0.5 (neutral), LR should match M2 approximately."""
+    import fuzzy as fz
+    for v in [0.1, 0.5, 0.9]:
+        lr_m2 = fz.fuzzy_lr(v)
+        lr_m3 = fz.fuzzy_lr_2input(v, 0.5)
+        # Should be in the same order-of-magnitude range
+        assert abs(lr_m2 - lr_m3) / max(lr_m2, 1e-10) < 0.5, \
+            f"M3 deviates too far from M2 at vol={v}: m2={lr_m2:.4e} m3={lr_m3:.4e}"
+
+
+def test_ruspini_sum_to_one():
+    """μ_Low + μ_Med + μ_High == 1 on [0,1]."""
+    import fuzzy as fz
+    v = np.linspace(0, 1, 501)
+    s = fz.mu_low(v) + fz.mu_med(v) + fz.mu_high(v)
+    assert np.allclose(s, 1.0, atol=1e-9)
+
+
+def test_m5_membership_bounds():
+    """ruspini_memberships must return values in [0,1] summing to 1."""
+    import fuzzy as fz
+    v = np.random.rand(100)
+    lo, me, hi = fz.ruspini_memberships(v)
+    assert (lo >= 0).all() and (lo <= 1).all()
+    assert (me >= 0).all() and (me <= 1).all()
+    assert (hi >= 0).all() and (hi <= 1).all()
+    assert np.allclose(lo + me + hi, 1.0, atol=1e-9)
+
+
+def test_m3_table_shape():
+    """Precomputed M3 lookup table must be 21×21."""
+    import fuzzy as fz
+    assert fz._M3_TABLE.shape == (21, 21), \
+        f"M3 table shape {fz._M3_TABLE.shape} != (21,21)"

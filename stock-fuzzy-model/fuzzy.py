@@ -1,295 +1,216 @@
-"""Fuzzy LR controller: real Mamdani FIS (vol_rank -> LR).
+"""Fuzzy logic components.
 
-Input vol_rank in [0, 1]: Low/Medium/High triangular Ruspini partition
-  (memberships sum to 1 everywhere).
-Output LR universe [1e-4, 3e-3]: overlapping Slow/Medium/Fast triangles.
-  Centroids: 0.4e-3 / 0.8e-3 / 1.6e-3. The requested 1.2e-3 / 2.4e-3
-  Med/Fast centroids produced a surface mean of 1.403e-3, outside the
-  20% band around 1e-3, so Med/Fast were scaled down (surface mean
-  1.133e-3).
-Rules: Low -> Fast, Medium -> Medium, High -> Slow.
-Inference: min implication, max aggregation, centroid defuzzification.
-A 201-pt lookup table is precomputed for training; it is cross-checked
-against skfuzzy.control.ControlSystem (max diff < 1e-9).
+M2 – vol_rank → LR (existing Mamdani single-input FIS, re-centred for Adam 1e-3).
+M3 – (vol_rank × trend_rank) → LR (9-rule two-input Mamdani FIS).
+M5 – Ruspini membership helpers for use as extra LSTM inputs.
 """
-
 import numpy as np
-
 import config as cfg
 
-V_GRID = np.linspace(0, 1, 201)
+# ── Shared output universe ──────────────────────────────────────────────────
+V_GRID   = np.linspace(0, 1, 201)
 OUT_GRID = np.linspace(cfg.LR_MIN, cfg.LR_MAX, 2001)
 
 
+# ── Triangular MF helper ────────────────────────────────────────────────────
+
 def _trimf(x, a, b, c):
-    """Triangular membership (a <= b <= c). Handles a==b / b==c shoulders."""
+    """Triangular MF trimf(x; a, b, c). Handles shoulder (a==b or b==c)."""
     x = np.asarray(x, dtype=float)
     y = np.zeros_like(x)
-    # rising edge
     if b != a:
-        rise = (x - a) / (b - a)
         m = (x >= a) & (x <= b)
-        y[m] = np.maximum(y[m], np.clip(rise[m], 0, 1))
+        y[m] = np.clip((x[m] - a) / (b - a), 0, 1)
     else:
-        y[x <= b] = np.maximum(y[x <= b], 1.0 * (x[x <= b] <= b))
-    # falling edge
+        y[x <= b] = 1.0
     if c != b:
-        fall = (c - x) / (c - b)
         m = (x >= b) & (x <= c)
-        y[m] = np.maximum(y[m], np.clip(fall[m], 0, 1))
+        y[m] = np.maximum(y[m], np.clip((c - x[m]) / (c - b), 0, 1))
     else:
-        y[x >= b] = np.maximum(y[x >= b], 1.0 * (x[x >= b] >= b))
+        y[x >= b] = np.maximum(y[x >= b], 1.0)
     return np.clip(y, 0, 1)
 
 
-def _interp_universe(x, mf, y):
-    """Universe points where a piecewise-linear mf equals level y."""
-    if y == 0.0:
-        idx = np.where(np.diff(mf > y))[0]
-    else:
-        idx = np.where(np.diff(mf >= y))[0]
-    return (x[idx] + (y - mf[idx]) * (x[idx + 1] - x[idx])
-            / (mf[idx + 1] - mf[idx]))
+# ── Output MFs (shared by M2 and M3) ───────────────────────────────────────
+SLOW_MF = _trimf(OUT_GRID, 0.0,          cfg.LR_SLOW_C, cfg.LR_MED_C)
+MED_MF  = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C,  cfg.LR_FAST_C)
+FAST_MF = _trimf(OUT_GRID, cfg.LR_MED_C,  cfg.LR_FAST_C, cfg.LR_MAX)
 
+_OUT_MFS = {"Slow": SLOW_MF, "Med": MED_MF, "Fast": FAST_MF}
+
+
+# ── Centroid defuzzification ────────────────────────────────────────────────
 
 def _centroid_exact(x, mf):
-    """Exact centroid of a piecewise-linear MF (same math as skfuzzy)."""
-    moment_sum, area_sum = 0.0, 0.0
+    """Exact centroid of a piecewise-linear MF."""
+    moment, area = 0.0, 0.0
     for i in range(1, len(x)):
-        x1, x2 = x[i - 1], x[i]
-        y1, y2 = mf[i - 1], mf[i]
+        x1, x2, y1, y2 = x[i - 1], x[i], mf[i - 1], mf[i]
         if y1 == y2 == 0.0 or x1 == x2:
             continue
+        dx = x2 - x1
         if y1 == y2:
-            moment = 0.5 * (x1 + x2)
-            area = (x2 - x1) * y1
+            moment += 0.5 * (x1 + x2) * dx * y1
+            area   += dx * y1
         elif y1 == 0.0:
-            moment = 2.0 / 3.0 * (x2 - x1) + x1
-            area = 0.5 * (x2 - x1) * y2
+            moment += (2.0 / 3.0 * dx + x1) * 0.5 * dx * y2
+            area   += 0.5 * dx * y2
         elif y2 == 0.0:
-            moment = 1.0 / 3.0 * (x2 - x1) + x1
-            area = 0.5 * (x2 - x1) * y1
+            moment += (1.0 / 3.0 * dx + x1) * 0.5 * dx * y1
+            area   += 0.5 * dx * y1
         else:
-            moment = ((2.0 / 3.0 * (x2 - x1) * (y2 + 0.5 * y1))
-                      / (y1 + y2) + x1)
-            area = 0.5 * (x2 - x1) * (y1 + y2)
-        moment_sum += moment * area
-        area_sum += area
-    if area_sum <= 0.0:
-        return float("nan")
-    return float(moment_sum / area_sum)
+            moment += (2.0 / 3.0 * dx * (y2 + 0.5 * y1) / (y1 + y2) + x1) \
+                      * 0.5 * dx * (y1 + y2)
+            area   += 0.5 * dx * (y1 + y2)
+    return float(moment / area) if area > 0 else float("nan")
 
 
-# ---- Input MFs: Ruspini triangular partition of [0, 1] ----
-def mu_low(v):
-    return _trimf(v, 0.0, 0.0, 0.5)
+def _aggregate_and_defuzz(cuts_labels):
+    """Apply min-implication / max-aggregation / centroid-defuzz.
+
+    cuts_labels: list of (strength, label) where label ∈ {"Slow","Med","Fast"}.
+    Returns LR (float).
+    """
+    agg = np.zeros_like(OUT_GRID)
+    for strength, label in cuts_labels:
+        if strength > 0:
+            agg = np.maximum(agg, np.minimum(strength, _OUT_MFS[label]))
+    if agg.sum() <= 0:
+        return float((cfg.LR_SLOW_C + cfg.LR_MED_C + cfg.LR_FAST_C) / 3.0)
+    return _centroid_exact(OUT_GRID, agg)
 
 
-def mu_med(v):
-    return _trimf(v, 0.0, 0.5, 1.0)
+# ═══════════════════════════════════════════════════════════════════════════
+# M2 – Single-input FIS: vol_rank → LR
+# Rule: Low → Fast, Medium → Medium, High → Slow
+# ═══════════════════════════════════════════════════════════════════════════
 
-
-def mu_high(v):
-    return _trimf(v, 0.5, 1.0, 1.0)
-
-
-# ---- Output MFs: overlapping triangles, centroids at the adjusted values ----
-SLOW_MF = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, cfg.LR_MED_C)
-MED_MF = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C, cfg.LR_FAST_C)
-FAST_MF = _trimf(OUT_GRID, cfg.LR_MED_C, cfg.LR_FAST_C, cfg.LR_MAX)
+# Input MFs: Ruspini partition of [0,1]
+def mu_low(v):  return _trimf(np.asarray(v, float), 0.0, 0.0, 0.5)
+def mu_med(v):  return _trimf(np.asarray(v, float), 0.0, 0.5, 1.0)
+def mu_high(v): return _trimf(np.asarray(v, float), 0.5, 1.0, 1.0)
 
 
 def mamdani_lr(v) -> float:
-    """Single-point Mamdani inference with centroid defuzzification.
-
-    The output universe is upsampled at each clipped MF's crossing points
-    (as skfuzzy does) so the centroid is not biased by the lookup grid.
-    """
+    """Single-point M2 inference: vol_rank → LR."""
     v = float(np.clip(v, 0, 1))
-    a_low, a_med, a_high = mu_low(v), mu_med(v), mu_high(v)
-    # Rules: Low -> Fast, Medium -> Medium, High -> Slow (min implication)
-    cuts = [(a_high, SLOW_MF), (a_med, MED_MF), (a_low, FAST_MF)]
-    new_values = []
-    for cut, mf in cuts:
-        if cut > 0.0:
-            new_values.extend(_interp_universe(OUT_GRID, mf, cut).tolist())
-    universe = np.union1d(OUT_GRID, new_values) if new_values else OUT_GRID
-    agg = np.zeros_like(universe)
-    for cut, mf in cuts:
-        if cut <= 0.0:
-            continue
-        upsampled = np.interp(universe, OUT_GRID, mf)
-        agg = np.maximum(agg, np.minimum(cut, upsampled))  # max aggregation
-    if agg.sum() <= 0:
-        return float((cfg.LR_SLOW_C + cfg.LR_MED_C + cfg.LR_FAST_C) / 3.0)
-    return _centroid_exact(universe, agg)  # centroid defuzz
+    a_low, a_med, a_high = float(mu_low(v)), float(mu_med(v)), float(mu_high(v))
+    return _aggregate_and_defuzz([
+        (a_high, "Slow"),
+        (a_med,  "Med"),
+        (a_low,  "Fast"),
+    ])
 
 
-# Precomputed 201-pt lookup table for training
+# Precomputed 201-pt lookup table
 LR_CURVE = np.array([mamdani_lr(v) for v in V_GRID])
-MEAN_LR = float(LR_CURVE.mean())
+MEAN_LR  = float(LR_CURVE.mean())
 
 
 def fuzzy_lr(v) -> float:
-    """Map vol_rank in [0,1] -> LR via linear interp on the precomputed curve."""
+    """M2: vol_rank → LR via linear interp on precomputed curve."""
     return float(np.interp(np.clip(v, 0, 1), V_GRID, LR_CURVE))
 
 
-def skfuzzy_reference_curve():
-    """Build the identical FIS with skfuzzy.control and evaluate on V_GRID."""
-    from skfuzzy import control as ctrl
+# ═══════════════════════════════════════════════════════════════════════════
+# M3 – Two-input FIS: (vol_rank × trend_rank) → LR, 9 rules
+# vol:   Low/Med/High  (Ruspini on vol_rank)
+# trend: Low/Med/High  (Ruspini on trend_rank)
+# Rules (intuition: high vol → slow; downtrend + high vol → slowest)
+#   (Low,  Low)  → Med    (Low,  Med) → Fast   (Low,  High) → Fast
+#   (Med,  Low)  → Slow   (Med,  Med) → Med    (Med,  High) → Med
+#   (High, Low)  → Slow   (High, Med) → Slow   (High, High) → Med
+# ═══════════════════════════════════════════════════════════════════════════
 
-    vol = ctrl.Antecedent(V_GRID, "vol")
-    lr = ctrl.Consequent(OUT_GRID, "lr")
-    vol["Low"] = _trimf(V_GRID, 0.0, 0.0, 0.5)
-    vol["Medium"] = _trimf(V_GRID, 0.0, 0.5, 1.0)
-    vol["High"] = _trimf(V_GRID, 0.5, 1.0, 1.0)
-    lr["Slow"] = _trimf(OUT_GRID, 0.0, cfg.LR_SLOW_C, cfg.LR_MED_C)
-    lr["Medium"] = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C, cfg.LR_FAST_C)
-    lr["Fast"] = _trimf(OUT_GRID, cfg.LR_MED_C, cfg.LR_FAST_C, cfg.LR_MAX)
-    r1 = ctrl.Rule(vol["Low"], lr["Fast"])
-    r2 = ctrl.Rule(vol["Medium"], lr["Medium"])
-    r3 = ctrl.Rule(vol["High"], lr["Slow"])
-    sys = ctrl.ControlSystem([r1, r2, r3])
-    sim = ctrl.ControlSystemSimulation(sys)
-    out = np.zeros_like(V_GRID)
-    for i, v in enumerate(V_GRID):
-        sim.input["vol"] = float(v)
-        sim.compute()
-        out[i] = float(sim.output["lr"])
-    return out
+_M3_RULES = [
+    # (vol_label, trend_label) → output_label
+    ("Low",  "Low",  "Med"),
+    ("Low",  "Med",  "Fast"),
+    ("Low",  "High", "Fast"),
+    ("Med",  "Low",  "Slow"),
+    ("Med",  "Med",  "Med"),
+    ("Med",  "High", "Med"),
+    ("High", "Low",  "Slow"),
+    ("High", "Med",  "Slow"),
+    ("High", "High", "Med"),
+]
 
+
+def mamdani_lr_2input(vol_rank: float, trend_rank: float) -> float:
+    """M3: (vol_rank, trend_rank) → LR via 9-rule two-input Mamdani FIS."""
+    vol_rank   = float(np.clip(vol_rank,   0, 1))
+    trend_rank = float(np.clip(trend_rank, 0, 1))
+
+    mu_v = {"Low":  float(mu_low(vol_rank)),
+            "Med":  float(mu_med(vol_rank)),
+            "High": float(mu_high(vol_rank))}
+    mu_t = {"Low":  float(mu_low(trend_rank)),
+            "Med":  float(mu_med(trend_rank)),
+            "High": float(mu_high(trend_rank))}
+
+    cuts = [(min(mu_v[vl], mu_t[tl]), out)
+            for vl, tl, out in _M3_RULES]
+    return _aggregate_and_defuzz(cuts)
+
+
+# Precomputed 21×21 lookup table for M3
+_M3_GRID = np.linspace(0, 1, 21)
+_M3_TABLE = np.array([[mamdani_lr_2input(v, t) for t in _M3_GRID]
+                      for v in _M3_GRID])
+
+
+def fuzzy_lr_2input(vol_rank: float, trend_rank: float) -> float:
+    """M3: bilinear interp on precomputed 21×21 table."""
+    v = float(np.clip(vol_rank,   0, 1))
+    t = float(np.clip(trend_rank, 0, 1))
+    vi = np.interp(v, _M3_GRID, np.arange(len(_M3_GRID)))
+    ti = np.interp(t, _M3_GRID, np.arange(len(_M3_GRID)))
+    vi0, ti0 = int(vi), int(ti)
+    vi1 = min(vi0 + 1, len(_M3_GRID) - 1)
+    ti1 = min(ti0 + 1, len(_M3_GRID) - 1)
+    dv, dt = vi - vi0, ti - ti0
+    lr = (  _M3_TABLE[vi0, ti0] * (1 - dv) * (1 - dt)
+          + _M3_TABLE[vi1, ti0] * dv       * (1 - dt)
+          + _M3_TABLE[vi0, ti1] * (1 - dv) * dt
+          + _M3_TABLE[vi1, ti1] * dv       * dt)
+    return float(lr)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# M5 – Membership degree helpers (used as extra LSTM inputs)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ruspini_memberships(v) -> tuple:
+    """Return (Low, Med, High) Ruspini triangular memberships for v in [0,1].
+
+    Vectorised; works on scalars, arrays, or torch tensors.
+    """
+    v = np.clip(np.asarray(v, dtype=float), 0, 1)
+    low  = np.maximum(0.0, 1.0 - 2.0 * v)
+    med  = np.maximum(0.0, 1.0 - np.abs(2.0 * v - 1.0))
+    high = np.maximum(0.0, 2.0 * v - 1.0)
+    return low, med, high
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gate checks (T4) – curve shape only; mean within 20 % of 1e-3
+# ═══════════════════════════════════════════════════════════════════════════
 
 def check_gate() -> dict:
-    """Gate: smooth, monotone decreasing, mean within 20% of 1e-3.
-
-    NOTE: these gates are tautological w.r.t. training benefit — they only
-    verify the controller curve shape, not that fuzzy LRs help the LSTM.
-    """
-    diffs = np.abs(np.diff(LR_CURVE))
-    max_step = float(diffs.max())
+    """Verify M2 curve: smooth, monotone decreasing, mean ≈ 1e-3."""
+    diffs    = np.diff(LR_CURVE)
     lr_range = float(LR_CURVE.max() - LR_CURVE.min())
-    mean_ok = abs(MEAN_LR - 1e-3) / 1e-3 < 0.20
-    smooth_ok = max_step < 0.05 * lr_range
-    mono_ok = bool(np.all(np.diff(LR_CURVE) <= 1e-12))
-    # Ruspini partition check
-    part = mu_low(V_GRID) + mu_med(V_GRID) + mu_high(V_GRID)
-    ruspini_maxdiff = float(np.abs(part - 1.0).max())
-    ruspini_ok = ruspini_maxdiff < 1e-9
-    # Cross-check against skfuzzy ControlSystem
-    try:
-        ref = skfuzzy_reference_curve()
-        sk_maxdiff = float(np.abs(ref - LR_CURVE).max())
-        sk_ok = sk_maxdiff < 1e-9
-    except Exception as e:  # noqa: BLE001
-        sk_maxdiff = float("nan")
-        sk_ok = False
-        print(f"skfuzzy cross-check error: {e}")
-    ok = smooth_ok and mean_ok and mono_ok and ruspini_ok and sk_ok
-    return {"max_step": max_step, "range": lr_range, "mean": MEAN_LR,
-            "surface_min": float(LR_CURVE.min()),
-            "surface_max": float(LR_CURVE.max()),
-            "vol_min": 0.0, "vol_max": 1.0,
-            "smooth_ok": smooth_ok, "mean_ok": mean_ok, "mono_ok": mono_ok,
-            "ruspini_maxdiff": ruspini_maxdiff, "ruspini_ok": ruspini_ok,
-            "skfuzzy_maxdiff": sk_maxdiff, "skfuzzy_ok": sk_ok,
-            "pass": bool(ok)}
-
-
-# ==========================================================================
-# fuzzy_dyn: per-epoch Mamdani controller (val-loss change + vol_rank)
-# ==========================================================================
-# Inputs
-#   dloss = (vloss - prev_vloss) / prev_vloss
-#   vol   = epoch mean vol_rank in [0, 1]
-# Memberships (piecewise linear, clipped)
-#   Improving = clip(-dloss / 0.005, 0, 1)
-#   Worse     = clip( dloss / 0.005, 0, 1)
-#   Flat      = 1 - max(Improving, Worse)
-#   LowVol    = 1 - vol,  HighVol = vol
-# Rules (min for AND) -> LR multiplier, weighted-average defuzzification.
-# ==========================================================================
-
-def _clip01(x):
-    return float(np.clip(x, 0.0, 1.0))
-
-
-def fuzzy_memberships(dloss: float, vol: float) -> dict:
-    """Membership values used by the fuzzy_dyn rule base."""
-    vol = _clip01(vol)
-    scale = cfg.FUZZY_DYN_DLOSS_SCALE
-    improving = _clip01(-float(dloss) / scale)
-    worse = _clip01(float(dloss) / scale)
-    flat = 1.0 - max(improving, worse)
+    mean_ok  = abs(MEAN_LR - 1e-3) / 1e-3 < 0.20
+    smooth   = float(np.abs(diffs).max()) < 0.05 * lr_range
+    mono     = bool(np.all(diffs <= 1e-12))
+    part     = mu_low(V_GRID) + mu_med(V_GRID) + mu_high(V_GRID)
+    ruspini  = float(np.abs(part - 1.0).max()) < 1e-9
+    ok = mean_ok and smooth and mono and ruspini
     return {
-        "improving": improving,
-        "worse": worse,
-        "flat": flat,
-        "low": 1.0 - vol,
-        "high": vol,
+        "mean_lr":    MEAN_LR,
+        "mean_ok":    mean_ok,
+        "smooth_ok":  smooth,
+        "mono_ok":    mono,
+        "ruspini_ok": ruspini,
+        "pass":       bool(ok),
     }
-
-
-def fuzzy_dyn_factor(dloss: float, vol: float) -> float:
-    """Weighted-average defuzzified LR multiplier in [0.40, 1.15]."""
-    mu = fuzzy_memberships(dloss, vol)
-    rule_strengths = {
-        ("improving", "low"): min(mu["improving"], mu["low"]),
-        ("improving", "high"): min(mu["improving"], mu["high"]),
-        ("flat", "low"): min(mu["flat"], mu["low"]),
-        ("flat", "high"): min(mu["flat"], mu["high"]),
-        ("worse", "low"): min(mu["worse"], mu["low"]),
-        ("worse", "high"): min(mu["worse"], mu["high"]),
-    }
-    num = 0.0
-    den = 0.0
-    for key, strength in rule_strengths.items():
-        num += strength * cfg.FUZZY_DYN_RULES[key]
-        den += strength
-    if den <= 1e-15:
-        return 1.0
-    return float(num / den)
-
-
-class FuzzyDynController:
-    """Per-epoch LR controller with a 3-epoch linear warmup.
-
-    The controller starts at ``base_lr`` (1e-3). Epochs 1..warmup use
-    ``base_lr * epoch / warmup``. After warmup, each completed epoch's
-    validation loss updates the LR for the NEXT epoch (causal; only past
-    validation information is used).
-    """
-
-    def __init__(self, base_lr: float = cfg.FIXED_LR,
-                 warmup_epochs: int = cfg.WARMUP_EPOCHS,
-                 lr_min: float = cfg.LR_MIN, lr_max: float = cfg.LR_MAX):
-        self.base_lr = float(base_lr)
-        self.lr = float(base_lr)
-        self.warmup_epochs = int(warmup_epochs)
-        self.lr_min = float(lr_min)
-        self.lr_max = float(lr_max)
-        self.prev_vloss = None
-
-    def warmup_lr(self, epoch: int) -> float:
-        """Linear warmup from base/warmup to base over epochs 1..warmup."""
-        if self.warmup_epochs <= 0:
-            return self.lr
-        return float(self.base_lr * min(1.0, epoch / self.warmup_epochs))
-
-    def update(self, vloss: float, vol: float) -> float:
-        """Apply one completed epoch's val loss + mean vol_rank."""
-        if self.prev_vloss is None or not np.isfinite(self.prev_vloss) \
-                or self.prev_vloss <= 0.0:
-            dloss = 0.0
-        else:
-            dloss = (float(vloss) - self.prev_vloss) / self.prev_vloss
-        factor = fuzzy_dyn_factor(dloss, vol)
-        self.lr = float(np.clip(self.lr * factor, self.lr_min, self.lr_max))
-        self.prev_vloss = float(vloss)
-        return self.lr
-
-
-# Alias used by the fuzzy_vol ablation variant.
-def fuzzy_vol_lr(v) -> float:
-    """Map vol_rank in [0,1] -> LR via the Mamdani vol_rank curve."""
-    return fuzzy_lr(v)

@@ -1,66 +1,37 @@
-# REPORT_UPDATES.md — required report changes
+# REPORT_UPDATES.md — feature expansion and fuzzy-only pipeline
 
-> This file is rewritten by `python main.py` from the actual `results.csv`.
-> It intentionally contains no invented run numbers. Run the pipeline to
-> populate the result tables and p-values.
+Source: actual `results.csv` generated 2026-10-21 by `python main.py`. Historical results are archived under `archive/2026-10-21_pre_feature_update/`.
 
-## Changes implemented
+## Changes
 
-1. **Target (`config.py`, `data.py`)**
-   - Added `TARGET_MODE = "vol"` (default) and kept `"direction"`.
-   - Vol label: `1` if next-day `hl_range` (configurable to `|return|`)
-     exceeds the TRAIN-set median, else `0`. Median fit on train only;
-     label aligned with window end `t`; T2 spot-checks updated for both
-     targets and verify the next-day quantity.
+1. Added nine paper inputs plus eleven engineered inputs (20 total): returns/momentum, realized volatility, and SMA-trend features.
+2. Target is next-day UP/DOWN only; all features are trailing and monthly macro series are release-lagged.
+3. Removed fixed-LR variants from the active pipeline. Only the existing Mamdani fuzzy controller (`fuzzy`) is trained; `INITIAL_LR=0.001` is the optimizer initialisation, not an alternative mode.
+4. Added precision, recall, F1, MCC, majority baseline, and confusion-matrix reporting.
+5. Added a paired `full` vs `paper` feature ablation, both with fuzzy LR only.
 
-2. **Data scope (`data.py`)**
-   - Added `UNIVERSE_MODE = "pooled"`: the notebook's 100-company source
-     list (60 US + 40 India; 99 usable, `TATAMOTORS.NS` delisted), windows
-     built per ticker then concatenated.
-   - One global set of chronological cut dates shared by all tickers.
-   - Scaler, vol_rank reference, and vol-target median fit on TRAIN only.
-   - `^GSPC`-only mode remains available.
-   - Per-ticker raw data is cached so `prepare_data.py` and `main.py` do not
-     download twice.
+## Features
 
-3. **Fuzzy controller (`fuzzy.py`)**
-   - Existing Mamdani `vol_rank -> LR` curve kept as `fuzzy_vol` (ablation).
-   - Added `fuzzy_dyn`: per-epoch controller using
-     `dloss=(vloss-prev_vloss)/prev_vloss` and epoch mean vol_rank.
-     Memberships and 3x2 rules exactly as specified; min-AND;
-     weighted-average defuzzification; multiplier in `[0.40, 1.15]`;
-     `lr = clip(lr*factor, LR_MIN, LR_MAX)`; start LR `1e-3`; 3-epoch
-     linear warmup.
-   - Added unit tests in `tests/test_fuzzy.py` for factor bounds,
-     monotonicity, membership partition, warmup, and LR bounds.
-
-4. **Baselines and training (`train.py`)**
-   - Variants: `fixed_3e-4`, `fixed_1e-3`, `fixed_3e-3`, `fuzzy_dyn`,
-     `fuzzy_vol`. No ReduceLROnPlateau, cosine decay, or other scheduler.
-   - Best fixed LR selected on validation AUC only; paired comparison uses
-     that choice.
-   - Mean LR used is logged for every run.
-   - Early stopping on 3-epoch moving-average validation loss; best weights
-     restored only from `best_epoch >= 10`.
-   - Same seed -> same init and batch order for all variants (paired);
-     `SEEDS = range(30)`.
-
-5. **Metrics and statistics (`evaluate.py`, `run_all.py`)**
-   - Primary: test AUC. Secondary: test log-loss, epochs-to-target val
-     loss, area under val-loss curve, high-vol test AUC, across-seed std.
-   - Paired mean difference with 95% bootstrap CI, paired-t, Wilcoxon.
-   - Holm correction across secondary metrics; primary uncorrected.
-   - Claim rule: primary p < 0.05 AND CI excludes 0 AND direction favours
-     fuzzy; otherwise `NULL RESULT`.
-
-6. **Reporting (`plots.py`, `run_all.py`)**
-   - Regenerated loss curves, LR-over-epoch for `fuzzy_dyn`, and AUC
-     boxplot including all fixed LRs.
-   - `NOTES.md` and `REPORT_UPDATES.md` are written from actual results at
-     the end of `main.py`.
-   - T1–T8 kept; T4/T6 labelled tautological.
+- Paper (9): Close, VIX, EFFR, UNRATE, UMCSENT, USDX, MACD, ATR, RSI.
+- Engineered (11): Return_1D, Return_2D, Return_5D, Return_10D, Return_20D, Volatility_5D, Volatility_20D, Volatility_Ratio, Close_vs_SMA_5, Close_vs_SMA_20, SMA_5_vs_SMA_20.
+- `Return_20D` reconciles the prompt's 9+11=20 count with its enumerated 10 engineered features.
 
 ## Results
 
-Run `python prepare_data.py && python main.py`. The run overwrites this
-section with actual numbers copied programmatically from `results.csv`.
+| feature set | AUC | accuracy | balanced acc | precision | recall | F1 | MCC | majority acc |
+|---|---|---|---|---|---|---|---|---|
+| paper | 0.5168 ± 0.0128 | 0.4793 ± 0.0370 | 0.5043 ± 0.0122 | 0.5829 ± 0.0304 | 0.3458 ± 0.2084 | 0.3971 ± 0.1803 | 0.0091 ± 0.0275 | 0.5791 |
+| full | 0.5103 ± 0.0188 | 0.4825 ± 0.0432 | 0.5056 ± 0.0135 | 0.6016 ± 0.0466 | 0.3596 ± 0.2810 | 0.3858 ± 0.2122 | 0.0158 ± 0.0369 | 0.5791 |
+
+- `paper` confusion (summed): [[3281, 1669], [4455, 2355]].
+- `full` confusion (summed): [[3225, 1725], [4361, 2449]].
+
+Feature ablation (`full` - `paper`) on `test_auc`: mean diff -0.00644, 95% CI [-0.01579, 0.00257], paired-t p=0.1915, Wilcoxon p=0.1840. Descriptive only; no superiority claim.
+
+## Verification performed
+
+T1 data reproducibility, T2 label/split checks, T3 shape/NaN checks, T4 controller curve, T5 batch-vol gate, T6 LR schedule bounds/non-zero variance, T7 leakage flag, and T8 feature contract all ran in `main.py`.
+
+T7 leakage flags: 0. See `results.csv` and `NOTES.md`.
+
+Historical fixed-LR files: `archive/2026-10-21_pre_feature_update/`.

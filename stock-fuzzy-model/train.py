@@ -1,20 +1,14 @@
-"""Training loop with regime-aware batching + five learning-rate variants.
+"""Training loop for ^GSPC regression.
 
-Batching: train windows pre-sorted by end_date; each epoch permutes the ORDER
-of contiguous batches (never shuffles samples across batches). The final
-partial batch is INCLUDED (no silent drop_last). The same seed produces the
-same model initialisation and batch order for every variant (paired design).
+Supported variants (all fuzzy):
+  M2    – vol_rank → LR (Mamdani), RegressionLSTM
+  M3    – (vol_rank, trend_rank) → LR (9-rule FIS), RegressionLSTM
+  M4    – FuzzyMoELSTM (3 experts), vol_rank → LR
+  M5    – FuzzyInputLSTM (membership input), vol_rank → LR
+  M6    – RegressionLSTM, vol → LR, fuzzy-scaled grad clip
 
-Methods (only these five are active):
-  fixed_3e-4 / fixed_1e-3 / fixed_3e-3 - constant learning-rate baselines
-  fuzzy_dyn - per-epoch Mamdani controller using relative val-loss change and
-              the epoch mean vol_rank, with a 3-epoch linear warmup
-  fuzzy_vol - Mamdani vol_rank -> LR curve applied per batch (ablation)
-
-Early stopping uses the 3-epoch moving average of validation loss. Epochs
-1..9 are never eligible to be restored (best_epoch >= MIN_EPOCHS). The best
-eligible weights are restored. mean_lr_used (actual mean LR over all optimizer
-steps) is recorded for every run.
+Returns (model, history, val_preds_np, test_preds_np, info).
+val_preds / test_preds are predictions as log-return arrays (numpy).
 """
 import copy
 import os
@@ -22,246 +16,207 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import roc_auc_score
 from torch import nn
 
 import config as cfg
 import fuzzy as fz
-from model import DirectionLSTM
+from model import build_model
 
-VARIANTS = list(cfg.VARIANTS)
-FIXED_LRS = dict(cfg.FIXED_LRS)
-FIXED_VARIANTS = list(FIXED_LRS)
-FUZZY_VARIANTS = list(cfg.FUZZY_VARIANTS)
+VARIANTS = cfg.VARIANTS
 
 
-def _batch_index_list(n, batch_size):
-    """Contiguous batches INCLUDING the final partial batch."""
-    idx = np.arange(n)
-    return [idx[i:i + batch_size] for i in range(0, n, batch_size)]
+def _make_criterion():
+    if cfg.LOSS == "huber":
+        return nn.HuberLoss(delta=cfg.HUBER_DELTA)
+    return nn.MSELoss()
 
 
-def _moving_average(values, window=cfg.EARLY_STOP_MA):
-    """Causal moving average (partial window at the start)."""
-    values = np.asarray(values, dtype=float)
-    out = np.empty_like(values)
-    for i in range(len(values)):
-        out[i] = np.mean(values[max(0, i - window + 1):i + 1])
+def _get_lr(variant: str, vr: float, tr: float) -> float:
+    if variant == "M3":
+        return fz.fuzzy_lr_2input(vr, tr)
+    return fz.fuzzy_lr(vr)   # M2, M4, M5, M6 (all fuzzy)
+
+
+def _get_clip(variant: str, vr: float) -> float:
+    if variant == "M6":
+        # High vol → tighter clip (reduce noise in gradient)
+        return float(np.clip(cfg.GRAD_CLIP * (1.0 - 0.5 * vr), 0.1, cfg.GRAD_CLIP))
+    return cfg.GRAD_CLIP
+
+
+def _batch_indices(n: int, batch_size: int):
+    return [np.arange(n)[i:i + batch_size] for i in range(0, n, batch_size)]
+
+
+def _moving_avg(vals, w=cfg.EARLY_STOP_MA):
+    out, v = [], np.asarray(vals, float)
+    for i in range(len(v)):
+        out.append(float(np.mean(v[max(0, i - w + 1):i + 1])))
     return out
 
 
-def _variant_lr(variant, batch_vol):
-    """Per-batch LR for the variants that are not epoch-driven."""
-    if variant in FIXED_LRS:
-        return FIXED_LRS[variant]
-    if variant == "fuzzy_vol":
-        return fz.fuzzy_vol_lr(batch_vol)
-    if variant == "fuzzy_dyn":
-        raise ValueError("fuzzy_dyn LR is set per epoch, not per batch")
-    raise ValueError(f"unknown variant: {variant!r}")
+@torch.no_grad()
+def _predict(model, X_np, vr_np, tr_np, device):
+    model.eval()
+    Xt  = torch.tensor(X_np,  dtype=torch.float32).to(device)
+    vrt = torch.tensor(vr_np, dtype=torch.float32).to(device)
+    trt = torch.tensor(tr_np, dtype=torch.float32).to(device)
+    return model(Xt, vr=vrt, tr=trt).cpu().numpy()
 
 
-def _validate_lrs(variant, lrs_used):
-    """Raise if the applied LRs violate the method's contract."""
-    lrs = np.asarray(lrs_used, dtype=float)
-    if len(lrs) == 0:
-        raise AssertionError(f"{variant}: no optimizer steps recorded")
-    if variant in FIXED_LRS:
-        expected = FIXED_LRS[variant]
-        if not np.all(lrs == expected):
-            raise AssertionError(
-                f"{variant} changed LR: min={lrs.min():.12g} "
-                f"max={lrs.max():.12g} expected={expected:.12g}")
-        lr_std = 0.0  # mathematically exact; numpy cancellation gives ~1e-19
-    elif variant in FUZZY_VARIANTS:
-        if lrs.min() < cfg.LR_MIN - 1e-12 or lrs.max() > cfg.LR_MAX + 1e-12:
-            raise AssertionError(
-                f"{variant} LR out of bounds [{cfg.LR_MIN}, {cfg.LR_MAX}]: "
-                f"min={lrs.min():.12g} max={lrs.max():.12g}")
-        lr_std = float(lrs.std())
-    else:
-        raise ValueError(f"unknown variant: {variant!r}")
-    return {"lr_min_used": float(lrs.min()),
-            "lr_max_used": float(lrs.max()),
-            "lr_std_used": lr_std}
+def train_model(data: dict,
+                variant: str = "M2",
+                seed: int = 0,
+                epochs: int = cfg.EPOCHS,
+                batch_size: int = cfg.BATCH_SIZE,
+                logdir: str = "logs"):
+    """Train one variant for one seed.
 
-
-def train_variant(X_train, y_train, vr_train, X_val, y_val,
-                  variant, seed, epochs=None,
-                  batch_size=cfg.BATCH_SIZE, logdir="logs"):
-    """Train one variant/seed. Returns (model, history, batch_log_df, info)."""
+    Returns (model, history, val_preds_np, test_preds_np, info).
+    """
     if variant not in VARIANTS:
-        raise ValueError(f"unknown variant: {variant!r}")
-    epochs = cfg.EPOCHS if epochs is None else epochs
-    if epochs < cfg.MIN_EPOCHS:
-        raise ValueError(
-            f"epochs={epochs} < MIN_EPOCHS={cfg.MIN_EPOCHS}; cannot restore "
-            f"a best_epoch >= {cfg.MIN_EPOCHS}")
+        raise ValueError(f"Unknown variant '{variant}'. Must be one of {VARIANTS}")
+
     cfg.set_seed(seed)
     os.makedirs(logdir, exist_ok=True)
     device = cfg.resolve_device()
 
-    model = DirectionLSTM(n_features=X_train.shape[2]).to(device)
-    criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.FIXED_LR,
-                                 weight_decay=cfg.WEIGHT_DECAY)
+    n_features = data["X_train"].shape[2]
+    model      = build_model(variant, n_features,
+                             hidden_size=cfg.HIDDEN_SIZE,
+                             num_layers=cfg.NUM_LAYERS,
+                             dropout=cfg.DROPOUT).to(device)
+    criterion  = _make_criterion()
+    optimizer  = torch.optim.Adam(model.parameters(),
+                                  lr=cfg.INITIAL_LR,
+                                  weight_decay=cfg.WEIGHT_DECAY)
 
-    Xt = torch.tensor(X_train, dtype=torch.float32)
-    yt = torch.tensor(y_train, dtype=torch.float32)
-    Xv = torch.tensor(X_val, dtype=torch.float32).to(device)
-    yv = torch.tensor(y_val, dtype=torch.float32).to(device)
+    # Tensors
+    Xt_all  = torch.tensor(data["X_train"],    dtype=torch.float32)
+    yt_all  = torch.tensor(data["y_train"],    dtype=torch.float32)
+    Xv      = torch.tensor(data["X_val"],      dtype=torch.float32).to(device)
+    yv      = torch.tensor(data["y_val"],      dtype=torch.float32).to(device)
+    vr_v    = torch.tensor(data["vr_val"],     dtype=torch.float32).to(device)
+    tr_v    = torch.tensor(data["tr_val"],     dtype=torch.float32).to(device)
 
-    batches = _batch_index_list(len(Xt), batch_size)
-    rng = np.random.default_rng(seed)
+    vr_train = data["vr_train"]
+    tr_train = data["tr_train"]
 
-    # Regime-batching quantity: std of batch vol (fixed batching, pre-permutation)
-    bvols = np.array([vr_train[b].mean() for b in batches])
-    vol_std = float(bvols.std())
+    batches = _batch_indices(len(Xt_all), batch_size)
+    rng     = np.random.default_rng(seed)
 
-    # fuzzy_dyn uses one vol_rank input per epoch (mean over the training set).
-    epoch_vol = float(np.mean(vr_train)) if len(vr_train) else 0.0
-    controller = fz.FuzzyDynController(base_lr=cfg.FIXED_LR,
-                                       warmup_epochs=cfg.WARMUP_EPOCHS)
-    prev_vloss = None
+    history = {"train_loss": [], "val_loss": [], "val_loss_ma": [],
+               "lr_epoch": [], "grad_clip_epoch": []}
+    batch_log = []
 
-    rows = []
-    lrs_used = []  # actual LR applied at every optimizer step (fairness)
-    history = {"train_loss": [], "val_loss": [], "val_loss_ma3": [],
-               "val_acc": [], "val_auc": [], "lr_epoch": []}
     best_ma, best_state, best_epoch, stale = np.inf, None, 0, 0
+    lrs_used = []
 
     for epoch in range(1, epochs + 1):
-        # ---- learning rate for this epoch --------------------------------
-        if variant == "fuzzy_dyn":
-            epoch_lr = (controller.warmup_lr(epoch)
-                        if epoch <= cfg.WARMUP_EPOCHS else controller.lr)
-        else:
-            epoch_lr = None
-
-        order = rng.permutation(len(batches))  # permute batch ORDER only
+        order = rng.permutation(len(batches))
         model.train()
         run_loss, n_seen = 0.0, 0
-        epoch_lrs = []
+        epoch_lrs, epoch_clips = [], []
+
         for bi in order:
-            idx = batches[bi]
-            xb, yb = Xt[idx].to(device), yt[idx].to(device)
-            if variant == "fuzzy_dyn":
-                lr = epoch_lr
-            else:
-                # volatility of THIS actual training batch (train split only)
-                bvol = float(vr_train[idx].mean())
-                lr = _variant_lr(variant, bvol)
-            lrs_used.append(lr)
-            epoch_lrs.append(lr)
+            idx  = batches[bi]
+            xb   = Xt_all[idx].to(device)
+            yb   = yt_all[idx].to(device)
+            bvr  = float(vr_train[idx].mean())
+            btr  = float(tr_train[idx].mean())
+
+            lr   = _get_lr(variant, bvr, btr)
+            clip = _get_clip(variant, bvr)
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
-            optimizer.zero_grad()
-            preds = model(xb)
-            loss = criterion(preds, yb)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.GRAD_CLIP)
-            optimizer.step()
-            run_loss += loss.item() * len(idx)
-            n_seen += len(idx)
-            log_row = {"epoch": epoch, "batch": int(bi), "lr": lr,
-                       "loss": loss.item()}
-            if variant != "fuzzy_dyn":
-                log_row["vol"] = bvol
-            else:
-                log_row["vol"] = epoch_vol
-            rows.append(log_row)
 
-        # ---- validation ---------------------------------------------------
+            vrt_b = torch.tensor(vr_train[idx], dtype=torch.float32).to(device)
+            trt_b = torch.tensor(tr_train[idx], dtype=torch.float32).to(device)
+
+            optimizer.zero_grad()
+            pred = model(xb, vr=vrt_b, tr=trt_b)
+            loss = criterion(pred, yb)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            optimizer.step()
+
+            run_loss += loss.item() * len(idx)
+            n_seen   += len(idx)
+            lrs_used.append(lr)
+            epoch_lrs.append(lr)
+            epoch_clips.append(clip)
+            batch_log.append({"epoch": epoch, "batch": int(bi),
+                              "lr": lr, "clip": clip,
+                              "loss": loss.item(), "vol": bvr})
+
+        # Validation
         model.eval()
         with torch.no_grad():
-            pv = model(Xv)
-            vloss = nn.BCELoss()(pv, yv).item()
-            pv_np = pv.detach().cpu().numpy()
-            vacc = (((pv > 0.5).float() == yv).sum().item() / max(len(yv), 1))
-            vauc = float(roc_auc_score(y_val, pv_np)) if len(np.unique(y_val)) > 1 else float("nan")
-        history["train_loss"].append(run_loss / max(n_seen, 1))
+            pv   = model(Xv, vr=vr_v, tr=tr_v)
+            vloss = criterion(pv, yv).item()
+
+        train_loss = run_loss / max(n_seen, 1)
+        history["train_loss"].append(train_loss)
         history["val_loss"].append(vloss)
-        history["val_acc"].append(vacc)
-        history["val_auc"].append(vauc)
         history["lr_epoch"].append(float(np.mean(epoch_lrs)))
-
-        # Early-stopping signal: 3-epoch moving-average validation loss.
+        history["grad_clip_epoch"].append(float(np.mean(epoch_clips)))
         ma = float(np.mean(history["val_loss"][-cfg.EARLY_STOP_MA:]))
-        history["val_loss_ma3"].append(ma)
+        history["val_loss_ma"].append(ma)
 
-        # ---- fuzzy_dyn update (causal: applies to the NEXT epoch) ---------
-        if variant == "fuzzy_dyn":
-            if prev_vloss is not None and epoch >= cfg.WARMUP_EPOCHS:
-                controller.update(vloss, epoch_vol)
-            prev_vloss = float(vloss)
-
-        # ---- early stopping (never restore epochs 1..MIN_EPOCHS-1) --------
         if epoch >= cfg.MIN_EPOCHS:
             if ma < best_ma - 1e-12:
-                best_ma = ma
+                best_ma    = ma
                 best_state = copy.deepcopy(model.state_dict())
                 best_epoch, stale = epoch, 0
             else:
                 stale += 1
                 if stale >= cfg.PATIENCE:
-                    print(f"[{variant} s{seed}] early stop at epoch {epoch} "
-                          f"(best MA3 {best_ma:.6f} at {best_epoch})")
+                    print(f"  [{variant} s{seed}] early stop ep{epoch} "
+                          f"(best MA{cfg.EARLY_STOP_MA}={best_ma:.6f} "
+                          f"at ep{best_epoch})")
                     break
 
     if best_state is None:
-        raise AssertionError(
-            f"{variant} s{seed}: no best weights at epoch >= {cfg.MIN_EPOCHS}")
+        best_state = copy.deepcopy(model.state_dict())
+        best_epoch = len(history["val_loss"])
+        print(f"  [{variant} s{seed}] WARNING: no best state before MIN_EPOCHS; "
+              "using final weights.")
     model.load_state_dict(best_state)
 
-    log_df = pd.DataFrame(rows)
-    log_df.to_csv(os.path.join(logdir, f"{variant}_s{seed}.csv"), index=False)
-    pd.DataFrame({"train_loss": history["train_loss"],
-                  "val_loss": history["val_loss"],
-                  "val_loss_ma3": history["val_loss_ma3"],
-                  "val_acc": history["val_acc"],
-                  "val_auc": history["val_auc"],
-                  "lr_epoch": history["lr_epoch"]}).to_csv(
-        os.path.join(logdir, f"{variant}_s{seed}_hist.csv"), index=False)
+    # Save batch log
+    tag = f"{variant}_s{seed}"
+    pd.DataFrame(batch_log).to_csv(
+        os.path.join(logdir, f"{tag}_batch.csv"), index=False)
+    pd.DataFrame({k: history[k] for k in history}).to_csv(
+        os.path.join(logdir, f"{tag}_hist.csv"), index=False)
 
-    # corr(vol, lr): meaningful only for fuzzy_vol; recorded for all variants.
-    lr_std = float(log_df["lr"].std())
-    vol_std_log = float(log_df["vol"].std())
-    corr = (float(log_df["vol"].corr(log_df["lr"]))
-            if lr_std > 1e-12 and vol_std_log > 1e-12 else float("nan"))
-    mean_lr_used = float(np.mean(lrs_used)) if lrs_used else float("nan")
-    lr_checks = _validate_lrs(variant, lrs_used)
+    # Predictions on val and test
+    val_preds  = _predict(model, data["X_val"],  data["vr_val"],  data["tr_val"],  device)
+    test_preds = _predict(model, data["X_test"], data["vr_test"], data["tr_test"], device)
 
-    best_val_loss = float(history["val_loss"][best_epoch - 1])
-    best_val_auc = float(history["val_auc"][best_epoch - 1])
-    info = {"best_epoch": int(best_epoch),
-            "best_val_loss": best_val_loss,
-            "best_val_ma3": float(best_ma),
-            "best_val_auc": best_val_auc,
-            "epochs_run": len(history["val_loss"]),
-            "early_stop_metric": f"val_loss_ma{cfg.EARLY_STOP_MA}",
-            "batch_vol_std": vol_std, "vol_lr_corr": corr,
-            "epoch_mean_vol": epoch_vol,
-            "mean_lr_used": mean_lr_used, "n_steps": len(lrs_used),
-            **lr_checks,
-            # reproducibility / experimental settings
-            "lr_policy": variant,
-            "lr_init": float(FIXED_LRS.get(variant, cfg.FIXED_LR)),
-            "lr_min": float(cfg.LR_MIN), "lr_max": float(cfg.LR_MAX),
-            "warmup_epochs": int(cfg.WARMUP_EPOCHS),
-            "window": int(cfg.WINDOW), "batch_size": int(batch_size),
-            "max_epochs": int(epochs), "patience": int(cfg.PATIENCE),
-            "min_epochs": int(cfg.MIN_EPOCHS),
-            "grad_clip": float(cfg.GRAD_CLIP),
-            "weight_decay": float(cfg.WEIGHT_DECAY),
-            "train_frac": float(cfg.TRAIN_FRAC),
-            "val_frac": float(cfg.VAL_FRAC),
-            "universe_mode": cfg.UNIVERSE_MODE,
-            "target_mode": cfg.TARGET_MODE,
-            "n_features": int(X_train.shape[2]),
-            "n_train": len(X_train), "n_val": len(X_val)}
-    print(f"[{variant} s{seed}] best_epoch={best_epoch} "
-          f"val_auc={best_val_auc:.4f} val_loss={best_val_loss:.4f} "
-          f"MA3={best_ma:.6f} vol_std={vol_std:.3f} corr(vol,lr)={corr:.3f} "
-          f"mean_lr_used={mean_lr_used:.3e} lr=[{lr_checks['lr_min_used']:.3e}, "
-          f"{lr_checks['lr_max_used']:.3e}]")
-    return model, history, log_df, info
+    lrs_arr = np.asarray(lrs_used, float)
+    info = {
+        "variant":         variant,
+        "seed":            seed,
+        "best_epoch":      best_epoch,
+        "best_val_loss":   float(history["val_loss"][best_epoch - 1]),
+        "best_val_ma":     float(best_ma),
+        "epochs_run":      len(history["val_loss"]),
+        "lr_mean":         float(lrs_arr.mean()) if len(lrs_arr) else float("nan"),
+        "lr_std":          float(lrs_arr.std())  if len(lrs_arr) else float("nan"),
+        "lr_min":          float(lrs_arr.min())  if len(lrs_arr) else float("nan"),
+        "lr_max":          float(lrs_arr.max())  if len(lrs_arr) else float("nan"),
+        "loss_fn":         cfg.LOSS,
+        "window":          cfg.WINDOW,
+        "batch_size":      batch_size,
+        "hidden_size":     cfg.HIDDEN_SIZE,
+        "num_layers":      cfg.NUM_LAYERS,
+        "dropout":         cfg.DROPOUT,
+    }
+    best_tl = float(history["train_loss"][best_epoch - 1])
+    best_vl = float(history["val_loss"][best_epoch - 1])
+    print(f"  [{variant} s{seed}] ep={best_epoch}  "
+          f"train_loss={best_tl:.5f}  val_loss={best_vl:.5f}  "
+          f"lr_mean={info['lr_mean']:.3e}")
+
+    return model, history, val_preds, test_preds, info
