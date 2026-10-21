@@ -1,4 +1,10 @@
-"""Fetch ^GSPC and build raw + processed CSVs. No torch import (runs without it)."""
+"""Fetch data and build the inspection CSVs. No torch import.
+
+Pooled mode downloads/caches the 100-company notebook universe (60 US + 40
+India; ~99 usable symbols). The ^GSPC processed CSV is always written for
+the price/volatility figure. Training data itself is rebuilt by main.py from
+the same cache, with the chronological train-only split/scaler rules.
+"""
 import os
 
 import numpy as np
@@ -44,8 +50,21 @@ def write_10day(raw: pd.DataFrame, processed: pd.DataFrame):
           f"{proc_dates.iloc[0].date()}..{proc_dates.iloc[-1].date()})")
 
 
-def main():
-    os.makedirs("data", exist_ok=True)
+def prepare_pooled():
+    """Download/cache the pooled universe; main.py builds the windows."""
+    print(f"Pooled universe: {len(cfg.POOLED_TICKERS)} requested symbols "
+          f"({len(cfg.US_TICKERS)} US + {len(cfg.INDIA_TICKERS)} India)")
+    frames = D.batch_download(cfg.POOLED_TICKERS, cfg.START_DATE, cfg.END_DATE)
+    print(f"Cached {len(frames)}/{len(cfg.POOLED_TICKERS)} symbols")
+    usable = 0
+    for df in frames.values():
+        eng = D.engineer_features(df)
+        if len(eng) > cfg.WINDOW + 20:
+            usable += 1
+    print(f"Symbols with usable engineered features: {usable}")
+
+
+def prepare_gspc_processed():
     print(f"Fetching ^GSPC {cfg.START_DATE}..{cfg.END_DATE} "
           f"(yfinance end exclusive, auto_adjust=True)")
     raw = fetch_raw()
@@ -70,6 +89,17 @@ def main():
     eng = eng.copy()
     eng["split"] = splits
 
+    # TARGET_MODE="vol": median from the TRAIN split only.
+    if cfg.TARGET_MODE == "vol":
+        train_med = float(np.nanmedian(
+            eng.loc[eng["split"] == "train", cfg.VOL_TARGET_RAW_COL].values))
+        eng[cfg.VOL_TARGET_COL] = (
+            eng[cfg.VOL_TARGET_RAW_COL].values > train_med).astype(int)
+        eng["vol_target_train_median"] = train_med
+    else:
+        eng[cfg.VOL_TARGET_COL] = np.nan
+        eng["vol_target_train_median"] = np.nan
+
     # StandardScaler fit on train only; clip after transform.
     scaler = StandardScaler()
     scaler.fit(eng.loc[eng["split"] == "train", cfg.FEATURE_COLS].values)
@@ -82,7 +112,7 @@ def main():
     train_vol_sorted = np.sort(
         eng.loc[eng["split"] == "train", cfg.VOL_COL].values)
     eng["vol_rank"] = D._vol_rank(train_vol_sorted, eng[cfg.VOL_COL].values)
-    eng["fuzzy_lr"] = [fz.fuzzy_lr(v) for v in eng["vol_rank"].values]
+    eng["fuzzy_lr"] = [fz.fuzzy_vol_lr(v) for v in eng["vol_rank"].values]
 
     out = eng.reset_index()
     out.to_csv(PROC_CSV, index=False)
@@ -99,11 +129,19 @@ def main():
         print("tail:")
         print(frame.tail(3).to_string())
         if name == "processed":
-            print("per-split rows + up-rate:")
+            print("per-split rows + positive rate for target "
+                  f"`{cfg.TARGET_COL}`:")
             for s in ["train", "val", "test"]:
                 sub = frame[frame["split"] == s]
                 print(f"  {s}: n={len(sub)} "
-                      f"up_rate={sub['target_direction'].mean():.4f}")
+                      f"pos_rate={sub[cfg.TARGET_COL].mean():.4f}")
+
+
+def main():
+    os.makedirs("data", exist_ok=True)
+    if cfg.UNIVERSE_MODE == "pooled":
+        prepare_pooled()
+    prepare_gspc_processed()
 
 
 if __name__ == "__main__":

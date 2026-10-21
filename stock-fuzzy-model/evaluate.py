@@ -1,16 +1,28 @@
-"""Evaluation: AUC, acc, MCC, balanced acc, majority baseline + bootstrap CI."""
+"""Evaluation: primary test AUC, secondary metrics, paired stats.
+
+Primary metric (fixed in advance): test ROC AUC.
+Secondary metrics: test log-loss, epochs-to-target validation loss, area under
+the validation-loss curve, test AUC on high-vol days (top tercile of vol_rank),
+and across-seed std of the primary metric.
+"""
 import numpy as np
-import pandas as pd
 import torch
+from scipy.stats import ttest_rel, wilcoxon
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    log_loss,
     matthews_corrcoef,
     roc_auc_score,
 )
 
 import config as cfg
+
+PRIMARY_METRIC = "test_auc"
+SECONDARY_METRICS = ["test_logloss", "epochs_to_target_val_loss",
+                     "aulc_val_loss", "test_auc_highvol"]
+COMPARE_METRICS = [PRIMARY_METRIC] + SECONDARY_METRICS
 
 
 @torch.no_grad()
@@ -36,13 +48,50 @@ def select_threshold(y_val, proba_val):
     return thr, float(np.max(scores))
 
 
-def stability_metrics(history, log_df, best_epoch=None, vr_train=None):
+def moving_average(values, window=cfg.EARLY_STOP_MA):
+    values = np.asarray(values, dtype=float)
+    out = np.empty_like(values)
+    for i in range(len(values)):
+        out[i] = np.mean(values[max(0, i - window + 1):i + 1])
+    return out
+
+
+def best_epoch_from_history(history):
+    """First-eligible epoch with the lowest 3-epoch moving-average val loss."""
+    ma = np.asarray(history.get("val_loss_ma3", moving_average(history["val_loss"])),
+                    dtype=float)
+    eligible = [i for i in range(len(ma)) if i + 1 >= cfg.MIN_EPOCHS]
+    if not eligible:
+        raise ValueError(f"no epoch >= MIN_EPOCHS={cfg.MIN_EPOCHS}")
+    return int(min(eligible, key=lambda i: ma[i])) + 1
+
+
+def epochs_to_target_val_loss(history, target):
+    """First epoch whose 3-epoch MA val loss is <= target (censored at run end)."""
+    if target is None or not np.isfinite(target):
+        return float("nan")
+    ma = np.asarray(history.get("val_loss_ma3", moving_average(history["val_loss"])),
+                    dtype=float)
+    hits = np.where(ma <= target)[0]
+    return float(hits[0] + 1) if len(hits) else float(len(ma))
+
+
+def area_under_val_loss_curve(history):
+    """Trapezoidal area under the per-epoch validation-loss curve."""
+    val = np.asarray(history["val_loss"], dtype=float)
+    if len(val) < 2:
+        return float("nan")
+    # Trapezoidal rule; implemented directly for NumPy 1.x/2.x compatibility.
+    return float(np.sum(0.5 * (val[1:] + val[:-1])))
+
+
+def stability_metrics(history, log_df, best_epoch=None):
     val = np.array(history["val_loss"])
     train = np.array(history["train_loss"])
-    roll = pd_roll(val)
+    roll = moving_average(val, 3)
     spikes = int(((val[1:] - roll[:-1]) > val.std()).sum()) if len(val) > 2 else 0
     if best_epoch is None:
-        best = int(np.argmin(val)) + 1
+        best = best_epoch_from_history(history)
     else:
         best = int(best_epoch)
     gap = float(val[best - 1] - train[best - 1])  # val_loss - train_loss
@@ -51,12 +100,7 @@ def stability_metrics(history, log_df, best_epoch=None, vr_train=None):
             "train_val_gap": gap, "highvol_loss_var": hv}
 
 
-def pd_roll(val):
-    s = pd.Series(val)
-    return s.rolling(3, min_periods=1).mean().values
-
-
-def bootstrap_auc_ci(y_true, proba, n_boot=2000, seed=0):
+def bootstrap_auc_ci(y_true, proba, n_boot=200, seed=0):
     """Bootstrap 95% CI for ROC AUC (percentile method)."""
     rng = np.random.default_rng(seed)
     y_true = np.asarray(y_true)
@@ -87,7 +131,8 @@ def _classification_metrics(y_true, pred):
 
 
 def evaluate_run(model, history, log_df, X_val, y_val, X_test, y_test,
-                 X_train_last=None, y_train=None, seed=0):
+                 X_train_last=None, y_train=None, seed=0,
+                 vr_test=None, best_epoch=None, val_loss_target=None):
     proba_val = predict_proba(model, X_val)
     proba = predict_proba(model, X_test)
 
@@ -98,17 +143,30 @@ def evaluate_run(model, history, log_df, X_val, y_val, X_test, y_test,
 
     auc = float(roc_auc_score(y_test, proba)) if len(np.unique(y_test)) > 1 else float("nan")
     lo, hi = bootstrap_auc_ci(y_test, proba, seed=seed)
+    test_logloss = float(log_loss(y_test, proba, labels=[0, 1]))
 
+    highvol_auc = float("nan")
+    if vr_test is not None and len(vr_test) == len(y_test):
+        vol_cut = float(np.quantile(vr_test, 2.0 / 3.0))
+        mask = np.asarray(vr_test) >= vol_cut
+        if mask.sum() > 1 and len(np.unique(np.asarray(y_test)[mask])) > 1:
+            highvol_auc = float(roc_auc_score(np.asarray(y_test)[mask],
+                                              np.asarray(proba)[mask]))
+
+    if best_epoch is None:
+        best_epoch = best_epoch_from_history(history)
+    best_epoch = int(best_epoch)
     val_auc = np.asarray(history["val_auc"], dtype=float)
     val_loss = np.asarray(history["val_loss"], dtype=float)
-    if np.any(np.isfinite(val_auc)):
-        best_epoch = int(np.nanargmax(val_auc)) + 1
-    else:
-        best_epoch = int(np.argmin(val_loss)) + 1
 
     out = {"test_auc": auc,
            "test_auc_lo": lo,
            "test_auc_hi": hi,
+           "test_logloss": test_logloss,
+           "test_auc_highvol": highvol_auc,
+           "aulc_val_loss": area_under_val_loss_curve(history),
+           "epochs_to_target_val_loss": epochs_to_target_val_loss(
+               history, val_loss_target),
            "test_acc": m_thr["acc"],
            "test_mcc": m_thr["mcc"],
            "test_bal_acc": m_thr["bal_acc"],
@@ -136,4 +194,59 @@ def evaluate_run(model, history, log_df, X_val, y_val, X_test, y_test,
         lr = LogisticRegression(max_iter=1000).fit(X_train_last, y_train)
         out["logreg_auc"] = float(roc_auc_score(
             y_test, lr.predict_proba(X_test[:, -1, :])[:, 1]))
+    return out
+
+
+def paired_bootstrap_ci(a, b, n_boot=10000, seed=0):
+    """95% percentile bootstrap CI for mean(a - b), paired by row."""
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    a, b = a[mask], b[mask]
+    if len(a) == 0:
+        return float("nan"), float("nan"), float("nan")
+    diff = a - b
+    rng = np.random.default_rng(seed)
+    boot = np.array([diff[rng.integers(0, len(diff), len(diff))].mean()
+                     for _ in range(n_boot)])
+    return (float(diff.mean()), float(np.percentile(boot, 2.5)),
+            float(np.percentile(boot, 97.5)))
+
+
+def paired_tests(a, b):
+    """Paired t + Wilcoxon for mean(a - b) with fuzzy_dyn as a."""
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    a, b = a[mask], b[mask]
+    if len(a) < 2:
+        return {"n": len(a), "mean_diff": float("nan"),
+                "ci_lo": float("nan"), "ci_hi": float("nan"),
+                "p_t": float("nan"), "p_w": float("nan")}
+    mean_diff, ci_lo, ci_hi = paired_bootstrap_ci(a, b)
+    try:
+        _, p_t = ttest_rel(a, b)
+    except Exception:  # noqa: BLE001
+        p_t = float("nan")
+    try:
+        _, p_w = wilcoxon(a, b)
+    except Exception:  # noqa: BLE001
+        p_w = float("nan")
+    return {"n": len(a), "mean_diff": mean_diff,
+            "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "p_t": float(p_t), "p_w": float(p_w)}
+
+
+def holm_correction(pvals):
+    """Holm step-down adjusted p-values (NaN entries stay NaN)."""
+    pvals = np.asarray(pvals, dtype=float)
+    out = np.full_like(pvals, np.nan)
+    idx = np.where(np.isfinite(pvals))[0]
+    if len(idx) == 0:
+        return out
+    order = idx[np.argsort(pvals[idx])]
+    m = len(order)
+    prev = 0.0
+    for rank, i in enumerate(order):
+        adj = min(1.0, (m - rank) * pvals[i])
+        prev = max(prev, adj)
+        out[i] = prev
     return out

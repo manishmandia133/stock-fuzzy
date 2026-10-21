@@ -123,7 +123,7 @@ def plot_06_loss_curves(logdir="logs"):
                 sd = np.nanstd(arr, axis=0)
                 ep = np.arange(1, L + 1)
                 ax.plot(ep, m, label=variant)
-                ax.fill_between(ep, m - sd, m + sd, alpha=0.2)
+                ax.fill_between(ep, m - sd, m + sd, alpha=0.15)
         ax.axhline(LN2, color="k", linestyle=":", label="ln2 (chance BCE)")
         ax.set_xlabel("epoch")
         ax.set_ylabel(f"{split} (mean ± std over seeds)")
@@ -136,24 +136,29 @@ def plot_06_loss_curves(logdir="logs"):
 def plot_07_auc_boxplot(results_csv="results.csv"):
     if not os.path.exists(results_csv):
         return
+    from train import VARIANTS
+
     df = pd.read_csv(results_csv)
-    fig, ax = plt.subplots(figsize=(7, 4))
-    variants = [v for v in ["fixed_1e-3", "fuzzy"]
-                if v in set(df["variant"])]
+    variants = [v for v in VARIANTS if v in set(df["variant"])]
     data = [df.loc[df["variant"] == v, "test_auc"].values for v in variants]
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     try:
-        ax.boxplot(data, tick_labels=variants)
+        bp = ax.boxplot(data, tick_labels=variants, showmeans=True)
     except TypeError:
-        ax.boxplot(data, labels=variants)  # matplotlib < 3.9 fallback
+        bp = ax.boxplot(data, labels=variants, showmeans=True)  # mpl < 3.9
+    for median in bp["medians"]:
+        median.set_color("black")
+    ax.axhline(0.5, color="k", linestyle=":", label="chance AUC=0.5")
     ax.set_ylabel("test AUC")
-    ax.set_title(f"AUC per method ({df['seed'].nunique()} seeds each)")
-    plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
+    ax.set_title(f"Test AUC per variant ({df['seed'].nunique()} seeds each)")
+    plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
+    ax.legend(fontsize=8)
     fig.tight_layout()
     _save(fig, "07_auc_boxplot.png")
 
 
 def plot_04_lr_vs_vol(logdir="logs", seed=0):
-    p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
+    p = os.path.join(logdir, f"fuzzy_vol_s{seed}.csv")
     if not os.path.exists(p):
         return
     df = pd.read_csv(p)
@@ -161,27 +166,47 @@ def plot_04_lr_vs_vol(logdir="logs", seed=0):
     ax.scatter(df["vol"], np.array(df["lr"]) * 1e3, s=8, alpha=0.5)
     ax.set_xlabel("batch volatility (mean vol_rank)")
     ax.set_ylabel("LR (1e-3)")
-    ax.set_title(f"Fuzzy LR vs volatility (seed {seed})")
+    ax.set_title(f"fuzzy_vol LR vs volatility (seed {seed})")
     fig.tight_layout()
     _save(fig, f"04_lr_vs_vol_s{seed}.png")
 
 
-def plot_05_lr_over_steps(logdir="logs", seed=0):
-    """LR schedule over optimizer steps (shuffled batch order, NOT time)."""
-    p = os.path.join(logdir, f"fuzzy_s{seed}.csv")
-    if not os.path.exists(p):
+def plot_05_lr_over_epoch(logdir="logs"):
+    """LR over epochs for the epoch-driven fuzzy controller + ablation."""
+    variants = ["fuzzy_dyn", "fuzzy_vol"]
+    fig, ax = plt.subplots(figsize=(8, 4))
+    any_data = False
+    for variant in variants:
+        vals = []
+        for s in cfg.SEEDS:
+            p = os.path.join(logdir, f"{variant}_s{s}_hist.csv")
+            if os.path.exists(p):
+                h = pd.read_csv(p)
+                if "lr_epoch" in h.columns:
+                    vals.append(h["lr_epoch"].values)
+        if not vals:
+            continue
+        L = max(len(v) for v in vals)
+        arr = np.full((len(vals), L), np.nan)
+        for i, v in enumerate(vals):
+            arr[i, :len(v)] = v
+        m = np.nanmean(arr, axis=0) * 1e3
+        sd = np.nanstd(arr, axis=0) * 1e3
+        ep = np.arange(1, L + 1)
+        ax.plot(ep, m, label=variant)
+        ax.fill_between(ep, m - sd, m + sd, alpha=0.2)
+        any_data = True
+    if not any_data:
+        plt.close(fig)
         return
-    df = pd.read_csv(p)
-    fig, ax1 = plt.subplots(figsize=(8, 4))
-    ax1.plot(df["lr"].values * 1e3, label="LR")
-    ax1.set_xlabel("optimizer step (shuffled batch order, not time)")
-    ax1.set_ylabel("LR (1e-3)")
-    ax2 = ax1.twinx()
-    ax2.plot(df["vol"].values, color="orange", alpha=0.5, label="vol")
-    ax2.set_ylabel("batch vol")
-    ax1.set_title(f"LR schedule over optimizer steps (seed {seed})")
+    ax.axhline(cfg.FIXED_LR * 1e3, color="k", linestyle=":",
+               label=f"fixed base {cfg.FIXED_LR*1e3:.1f}e-3")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("LR (1e-3), mean ± std over seeds")
+    ax.set_title("Learning rate over epochs (fuzzy_dyn per-epoch; fuzzy_vol mean)")
+    ax.legend(fontsize=8)
     fig.tight_layout()
-    _save(fig, f"05_lr_over_step_s{seed}.png")
+    _save(fig, "05_lr_over_epoch.png")
 
 
 def plot_08_split_balance(data=None, data_csv="data/processed_GSPC.csv"):
@@ -245,11 +270,14 @@ def plot_09_gate_margins(n_train=None, data_csv="data/processed_GSPC.csv"):
 
 
 def make_all_plots(data=None):
+    stale = os.path.join(FIGDIR, "05_lr_over_step_s0.png")
+    if os.path.exists(stale):
+        os.remove(stale)
     plot_01_membership_functions()
     plot_02_control_and_example()
     plot_03_price_vol_lr()
     plot_04_lr_vs_vol()
-    plot_05_lr_over_steps()
+    plot_05_lr_over_epoch()
     plot_06_loss_curves()
     plot_07_auc_boxplot()
     n_train = len(data["X_train"]) if data is not None else None

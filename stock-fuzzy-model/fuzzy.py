@@ -194,3 +194,102 @@ def check_gate() -> dict:
             "ruspini_maxdiff": ruspini_maxdiff, "ruspini_ok": ruspini_ok,
             "skfuzzy_maxdiff": sk_maxdiff, "skfuzzy_ok": sk_ok,
             "pass": bool(ok)}
+
+
+# ==========================================================================
+# fuzzy_dyn: per-epoch Mamdani controller (val-loss change + vol_rank)
+# ==========================================================================
+# Inputs
+#   dloss = (vloss - prev_vloss) / prev_vloss
+#   vol   = epoch mean vol_rank in [0, 1]
+# Memberships (piecewise linear, clipped)
+#   Improving = clip(-dloss / 0.005, 0, 1)
+#   Worse     = clip( dloss / 0.005, 0, 1)
+#   Flat      = 1 - max(Improving, Worse)
+#   LowVol    = 1 - vol,  HighVol = vol
+# Rules (min for AND) -> LR multiplier, weighted-average defuzzification.
+# ==========================================================================
+
+def _clip01(x):
+    return float(np.clip(x, 0.0, 1.0))
+
+
+def fuzzy_memberships(dloss: float, vol: float) -> dict:
+    """Membership values used by the fuzzy_dyn rule base."""
+    vol = _clip01(vol)
+    scale = cfg.FUZZY_DYN_DLOSS_SCALE
+    improving = _clip01(-float(dloss) / scale)
+    worse = _clip01(float(dloss) / scale)
+    flat = 1.0 - max(improving, worse)
+    return {
+        "improving": improving,
+        "worse": worse,
+        "flat": flat,
+        "low": 1.0 - vol,
+        "high": vol,
+    }
+
+
+def fuzzy_dyn_factor(dloss: float, vol: float) -> float:
+    """Weighted-average defuzzified LR multiplier in [0.40, 1.15]."""
+    mu = fuzzy_memberships(dloss, vol)
+    rule_strengths = {
+        ("improving", "low"): min(mu["improving"], mu["low"]),
+        ("improving", "high"): min(mu["improving"], mu["high"]),
+        ("flat", "low"): min(mu["flat"], mu["low"]),
+        ("flat", "high"): min(mu["flat"], mu["high"]),
+        ("worse", "low"): min(mu["worse"], mu["low"]),
+        ("worse", "high"): min(mu["worse"], mu["high"]),
+    }
+    num = 0.0
+    den = 0.0
+    for key, strength in rule_strengths.items():
+        num += strength * cfg.FUZZY_DYN_RULES[key]
+        den += strength
+    if den <= 1e-15:
+        return 1.0
+    return float(num / den)
+
+
+class FuzzyDynController:
+    """Per-epoch LR controller with a 3-epoch linear warmup.
+
+    The controller starts at ``base_lr`` (1e-3). Epochs 1..warmup use
+    ``base_lr * epoch / warmup``. After warmup, each completed epoch's
+    validation loss updates the LR for the NEXT epoch (causal; only past
+    validation information is used).
+    """
+
+    def __init__(self, base_lr: float = cfg.FIXED_LR,
+                 warmup_epochs: int = cfg.WARMUP_EPOCHS,
+                 lr_min: float = cfg.LR_MIN, lr_max: float = cfg.LR_MAX):
+        self.base_lr = float(base_lr)
+        self.lr = float(base_lr)
+        self.warmup_epochs = int(warmup_epochs)
+        self.lr_min = float(lr_min)
+        self.lr_max = float(lr_max)
+        self.prev_vloss = None
+
+    def warmup_lr(self, epoch: int) -> float:
+        """Linear warmup from base/warmup to base over epochs 1..warmup."""
+        if self.warmup_epochs <= 0:
+            return self.lr
+        return float(self.base_lr * min(1.0, epoch / self.warmup_epochs))
+
+    def update(self, vloss: float, vol: float) -> float:
+        """Apply one completed epoch's val loss + mean vol_rank."""
+        if self.prev_vloss is None or not np.isfinite(self.prev_vloss) \
+                or self.prev_vloss <= 0.0:
+            dloss = 0.0
+        else:
+            dloss = (float(vloss) - self.prev_vloss) / self.prev_vloss
+        factor = fuzzy_dyn_factor(dloss, vol)
+        self.lr = float(np.clip(self.lr * factor, self.lr_min, self.lr_max))
+        self.prev_vloss = float(vloss)
+        return self.lr
+
+
+# Alias used by the fuzzy_vol ablation variant.
+def fuzzy_vol_lr(v) -> float:
+    """Map vol_rank in [0,1] -> LR via the Mamdani vol_rank curve."""
+    return fuzzy_lr(v)
