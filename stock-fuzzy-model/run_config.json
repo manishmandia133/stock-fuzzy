@@ -1,20 +1,29 @@
 {
-  "generated_utc": "2026-10-21T15:50:34.194839+00:00",
+  "generated_utc": "2026-10-22T14:04:27.397822+00:00",
   "ticker": "^GSPC",
   "start": "2015-01-01",
   "end": "2025-12-31",
   "variants": [
-    "M2"
+    "Fuzzy_Input"
   ],
   "seeds": [
-    0
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
   ],
   "window": 20,
   "hidden": 64,
   "layers": 1,
   "dropout": 0.2,
   "loss": "huber",
-  "batch": 32,
+  "batch": 16,
   "epochs": 100,
   "patience": 20,
   "lr_init": 0.001,

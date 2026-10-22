@@ -13,6 +13,8 @@ PAPER_MSE       = 1637.0
 PAPER_MAPE      = 0.7989    # percent
 PAPER_R         = 0.9976
 PAPER_MAE       = None      # not reported
+# RMSE normalised by the paper test-window mean close (~$3,256).
+PAPER_NRMSE     = 1.2424    # percent
 
 # --- Approximate persistence on the paper's window (informational) ---
 APPROX_PERSIST_RMSE = 41.5

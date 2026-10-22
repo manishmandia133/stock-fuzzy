@@ -1,10 +1,6 @@
 """Training loop for ^GSPC regression.
 
-Supported variants (strictly fuzzy models):
-  Fuzzy_MoE          – Takagi-Sugeno / Ruspini Fuzzy-gated MoE (3 regime experts)
-  Fuzzy_Input        – Neural Fuzzy with Ruspini membership degrees as inputs
-  Fuzzy_Adaptive_MoE – Fuzzy MoE + fuzzy adaptive gradient clipping
-  Fuzzy_ANFIS        – Hybrid ANFIS architecture (Fuzzy inputs + Fuzzy MoE)
+The fuzzy LSTM uses the Mamdani LR controller on vol_rank.
 
 Returns (model, history, val_preds_np, test_preds_np, info).
 val_preds / test_preds are predictions as log-return arrays (numpy).
@@ -30,16 +26,8 @@ def _make_criterion():
     return nn.MSELoss()
 
 
-def _get_lr(variant: str, vr: float, tr: float) -> float:
-    # All variants use the Mamdani fuzzy LR controller
+def _get_lr(vr: float) -> float:
     return fz.fuzzy_lr(vr)
-
-
-def _get_clip(variant: str, vr: float) -> float:
-    if "Adaptive" in variant:
-        # High vol → tighter clip (reduce noise in gradient)
-        return float(np.clip(cfg.GRAD_CLIP * (1.0 - 0.5 * vr), 0.1, cfg.GRAD_CLIP))
-    return cfg.GRAD_CLIP
 
 
 def _batch_indices(n: int, batch_size: int):
@@ -121,10 +109,9 @@ def train_model(data: dict,
             xb   = Xt_all[idx].to(device)
             yb   = yt_all[idx].to(device)
             bvr  = float(vr_train[idx].mean())
-            btr  = float(tr_train[idx].mean())
 
-            lr   = _get_lr(variant, bvr, btr)
-            clip = _get_clip(variant, bvr)
+            lr   = _get_lr(bvr)
+            clip = cfg.GRAD_CLIP
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
 

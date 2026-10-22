@@ -1,10 +1,9 @@
 """Fuzzy logic components.
 
-M2 – vol_rank → LR (existing Mamdani single-input FIS, re-centred for Adam 1e-3).
-M3 – (vol_rank × trend_rank) → LR (9-rule two-input Mamdani FIS).
-M5 – Ruspini membership helpers for use as extra LSTM inputs.
+M2 – vol_rank → LR (Mamdani single-input FIS, re-centred for Adam 1e-3).
 """
 import numpy as np
+
 import config as cfg
 
 # ── Shared output universe ──────────────────────────────────────────────────
@@ -31,7 +30,7 @@ def _trimf(x, a, b, c):
     return np.clip(y, 0, 1)
 
 
-# ── Output MFs (shared by M2 and M3) ───────────────────────────────────────
+# ── Output MFs ──────────────────────────────────────────────────────────────
 SLOW_MF = _trimf(OUT_GRID, 0.0,          cfg.LR_SLOW_C, cfg.LR_MED_C)
 MED_MF  = _trimf(OUT_GRID, cfg.LR_SLOW_C, cfg.LR_MED_C,  cfg.LR_FAST_C)
 FAST_MF = _trimf(OUT_GRID, cfg.LR_MED_C,  cfg.LR_FAST_C, cfg.LR_MAX)
@@ -110,86 +109,6 @@ MEAN_LR  = float(LR_CURVE.mean())
 def fuzzy_lr(v) -> float:
     """M2: vol_rank → LR via linear interp on precomputed curve."""
     return float(np.interp(np.clip(v, 0, 1), V_GRID, LR_CURVE))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# M3 – Two-input FIS: (vol_rank × trend_rank) → LR, 9 rules
-# vol:   Low/Med/High  (Ruspini on vol_rank)
-# trend: Low/Med/High  (Ruspini on trend_rank)
-# Rules (intuition: high vol → slow; downtrend + high vol → slowest)
-#   (Low,  Low)  → Med    (Low,  Med) → Fast   (Low,  High) → Fast
-#   (Med,  Low)  → Slow   (Med,  Med) → Med    (Med,  High) → Med
-#   (High, Low)  → Slow   (High, Med) → Slow   (High, High) → Med
-# ═══════════════════════════════════════════════════════════════════════════
-
-_M3_RULES = [
-    # (vol_label, trend_label) → output_label
-    ("Low",  "Low",  "Med"),
-    ("Low",  "Med",  "Fast"),
-    ("Low",  "High", "Fast"),
-    ("Med",  "Low",  "Slow"),
-    ("Med",  "Med",  "Med"),
-    ("Med",  "High", "Med"),
-    ("High", "Low",  "Slow"),
-    ("High", "Med",  "Slow"),
-    ("High", "High", "Med"),
-]
-
-
-def mamdani_lr_2input(vol_rank: float, trend_rank: float) -> float:
-    """M3: (vol_rank, trend_rank) → LR via 9-rule two-input Mamdani FIS."""
-    vol_rank   = float(np.clip(vol_rank,   0, 1))
-    trend_rank = float(np.clip(trend_rank, 0, 1))
-
-    mu_v = {"Low":  float(mu_low(vol_rank)),
-            "Med":  float(mu_med(vol_rank)),
-            "High": float(mu_high(vol_rank))}
-    mu_t = {"Low":  float(mu_low(trend_rank)),
-            "Med":  float(mu_med(trend_rank)),
-            "High": float(mu_high(trend_rank))}
-
-    cuts = [(min(mu_v[vl], mu_t[tl]), out)
-            for vl, tl, out in _M3_RULES]
-    return _aggregate_and_defuzz(cuts)
-
-
-# Precomputed 21×21 lookup table for M3
-_M3_GRID = np.linspace(0, 1, 21)
-_M3_TABLE = np.array([[mamdani_lr_2input(v, t) for t in _M3_GRID]
-                      for v in _M3_GRID])
-
-
-def fuzzy_lr_2input(vol_rank: float, trend_rank: float) -> float:
-    """M3: bilinear interp on precomputed 21×21 table."""
-    v = float(np.clip(vol_rank,   0, 1))
-    t = float(np.clip(trend_rank, 0, 1))
-    vi = np.interp(v, _M3_GRID, np.arange(len(_M3_GRID)))
-    ti = np.interp(t, _M3_GRID, np.arange(len(_M3_GRID)))
-    vi0, ti0 = int(vi), int(ti)
-    vi1 = min(vi0 + 1, len(_M3_GRID) - 1)
-    ti1 = min(ti0 + 1, len(_M3_GRID) - 1)
-    dv, dt = vi - vi0, ti - ti0
-    lr = (  _M3_TABLE[vi0, ti0] * (1 - dv) * (1 - dt)
-          + _M3_TABLE[vi1, ti0] * dv       * (1 - dt)
-          + _M3_TABLE[vi0, ti1] * (1 - dv) * dt
-          + _M3_TABLE[vi1, ti1] * dv       * dt)
-    return float(lr)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# M5 – Membership degree helpers (used as extra LSTM inputs)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def ruspini_memberships(v) -> tuple:
-    """Return (Low, Med, High) Ruspini triangular memberships for v in [0,1].
-
-    Vectorised; works on scalars, arrays, or torch tensors.
-    """
-    v = np.clip(np.asarray(v, dtype=float), 0, 1)
-    low  = np.maximum(0.0, 1.0 - 2.0 * v)
-    med  = np.maximum(0.0, 1.0 - np.abs(2.0 * v - 1.0))
-    high = np.maximum(0.0, 2.0 * v - 1.0)
-    return low, med, high
 
 
 # ═══════════════════════════════════════════════════════════════════════════

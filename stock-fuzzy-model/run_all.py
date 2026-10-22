@@ -1,7 +1,7 @@
 """Main experiment driver.
 
 Usage:
-    python main.py [--variants Fuzzy_MoE Fuzzy_Input ...] [--seeds 10] [--no-plots]
+    python main.py [--variants Fuzzy_Input] [--seeds 10] [--no-plots]
 
 Protocol
   1. Download + engineer features (^GSPC 2015-2025).
@@ -11,8 +11,9 @@ Protocol
   5. Write results.csv + RESULTS.md.
 """
 import json
+import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -22,7 +23,7 @@ import data as D
 import evaluate as E
 import fuzzy as fz
 from plots import make_all_plots
-from train import train_model, VARIANTS
+from train import VARIANTS, train_model
 
 
 def _fmt(x, nd=4):
@@ -74,8 +75,13 @@ def main(variants=None, seeds=None, make_plots=True):
     for variant in variants:
         print(f"\n-- variant={variant} --")
         for seed in seeds:
-            _, history, vp, tp, info = train_model(
+            _, _, vp, tp, info = train_model(
                 data, variant=variant, seed=seed)
+
+            # Calibrate on VALIDATION, then apply unchanged to TEST.
+            vp, tp, cal = E.calibrate_predictions(
+                data["y_val"], vp, tp, data["close_val"], data["close_test"])
+            info = {**info, **cal}
 
             # Val metrics (selection criterion — NEVER use test here)
             vm = E.regression_metrics(data["y_val"], vp, data["close_val"])
@@ -90,6 +96,7 @@ def main(variants=None, seeds=None, make_plots=True):
                    **{f"test_{k}": v for k, v in tm.items()}}
             # Rename test_* to top-level for table
             row["RMSE"]    = tm["RMSE"]
+            row["nRMSE"]   = tm["nRMSE"]
             row["MAPE"]    = tm["MAPE"]
             row["R"]       = tm["R"]
             row["MSE"]     = tm["MSE"]
@@ -99,6 +106,17 @@ def main(variants=None, seeds=None, make_plots=True):
 
             all_test_preds[variant].append(tp)
             all_val_preds[variant].append(vp)
+            np.savez(os.path.join("logs", f"{variant}_s{seed}_preds.npz"),
+                     val_pred=vp, test_pred=tp)
+
+    # Plotting data (saved so plots.py does not need to rebuild the pipeline).
+    os.makedirs("logs", exist_ok=True)
+    plot_keys = ["dates_train", "dates_val", "dates_test",
+                 "close_train", "close_val", "close_test",
+                 "y_train", "y_val", "y_test",
+                 "vr_train", "vr_val", "vr_test"]
+    np.savez(os.path.join("logs", "plots_data.npz"),
+             **{k: data[k] for k in plot_keys})
 
     res = pd.DataFrame(rows)
     res.to_csv("results.csv", index=False)
@@ -108,10 +126,14 @@ def main(variants=None, seeds=None, make_plots=True):
     ensemble_rows = []
     for variant in variants:
         ens_preds = E.ensemble_predict(all_test_preds[variant])
+        np.savez(os.path.join("logs", f"{variant}_ensemble_preds.npz"),
+                 val_pred=E.ensemble_predict(all_val_preds[variant]),
+                 test_pred=ens_preds)
         em = E.regression_metrics(data["y_test"], ens_preds, data["close_test"])
         ensemble_rows.append({
             "variant":    f"{variant}_ensemble",
             "RMSE":        em["RMSE"],
+            "nRMSE":       em["nRMSE"],
             "MAPE":        em["MAPE"],
             "R":           em["R"],
             "MSE":         em["MSE"],
@@ -122,9 +144,9 @@ def main(variants=None, seeds=None, make_plots=True):
     ens_df = pd.DataFrame(ensemble_rows)
     ens_df.to_csv("results_ensemble.csv", index=False)
 
-    # ── Paired tests (fuzzy variants vs M2 baseline, Holm-corrected) ──────
+    # ── Paired tests (Holm-corrected) ─────────────────────────────────────
     stats_rows = []
-    base_v = "Fuzzy_MoE"
+    base_v = "Fuzzy_Input"
     if base_v in variants and len(variants) > 1:
         base_rmse = res[res["variant"] == base_v]["RMSE"].values
         others = [v for v in variants if v != base_v]
@@ -169,7 +191,7 @@ def main(variants=None, seeds=None, make_plots=True):
     # ── run_config.json ───────────────────────────────────────────────────
     with open("run_config.json", "w", encoding="utf-8") as f:
         json.dump({
-            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "generated_utc": datetime.now(UTC).isoformat(),
             "ticker":  cfg.TICKER,
             "start":   cfg.START_DATE,
             "end":     cfg.END_DATE,

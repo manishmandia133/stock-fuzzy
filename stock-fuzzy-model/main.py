@@ -1,9 +1,9 @@
 """Entry point.
 
 Examples:
-    python main.py                              # all variants, 10 seeds
-    python main.py --variants Fuzzy_MoE Fuzzy_Input --seeds 5
-    python main.py --variants Fuzzy_ANFIS --seeds 30 --no-plots
+    python main.py                              # fuzzy model, 10 seeds
+    python main.py --variants Fuzzy_Input --seeds 5
+    python main.py --variants Fuzzy_Input --seeds 30 --no-plots
 """
 import argparse
 
@@ -12,7 +12,7 @@ from run_all import main
 
 
 def _parse():
-    p = argparse.ArgumentParser(description="^GSPC regression – fuzzy LSTM variants")
+    p = argparse.ArgumentParser(description="^GSPC regression – fuzzy LSTM")
     p.add_argument("--variants", nargs="*", default=None,
                    choices=cfg.VARIANTS,
                    help="Variants to run (default: all)")
